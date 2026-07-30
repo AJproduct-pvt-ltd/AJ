@@ -1007,7 +1007,10 @@
         state.bills = state.bills.filter(function(b){ return b.id!==id; });
         if(state.payFormOpenId===id) state.payFormOpenId=null;
         if(state.billEditForm && state.billEditForm.billId===id) state.billEditForm=null;
+        state.busyMsg = 'Deleting bill…';
+        render();
         await Promise.all([persist('bills'), persist('items')]);
+        state.busyMsg = '';
         render();
       });
     });
@@ -3984,7 +3987,10 @@
       item.stock += qty;
       item.purchasePrice = price;
       state.restockForm = null;
+      state.busyMsg = 'Adding stock…';
+      render();
       await persist('items');
+      state.busyMsg = '';
       render();
     });
     var rsCancel = document.getElementById('rs-cancel');
@@ -4739,7 +4745,10 @@
         var id = btn.getAttribute('data-del-item');
         if(!confirm('Delete this item?')) return;
         state.items = state.items.filter(function(i){ return i.id!==id; });
+        state.busyMsg = 'Deleting item…';
+        render();
         await persist('items');
+        state.busyMsg = '';
         render();
       });
     });
@@ -4764,7 +4773,10 @@
         var batches = stock>0 ? [{id:uid('b'), qty:stock, purchasePrice:purchasePrice, dateISO:new Date().toISOString()}] : [];
         state.items.push({id:uid('it'), name:name, category:cat, price:price, stock:stock, image:image, purchasePrice:purchasePrice, batches:batches});
       }
+      state.busyMsg = 'Saving item…';
+      render();
       await persist('items');
+      state.busyMsg = '';
       state.itemForm = null;
       render();
     });
