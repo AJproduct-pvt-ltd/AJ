@@ -529,8 +529,6 @@
   var state = {
     booted:false,
     bootLoadFailed:false,
-    autoRefresh:false,
-    autoRefreshMs:5000,
     storageOk:true,
     storageErr:'',
     view:'billing',
@@ -966,13 +964,6 @@
   function pageActionsHtml(){
     return '<div class="page-actions">'+
       '<button class="btn btn-ghost btn-sm" id="refresh-data-btn">&#8635; Refresh Data</button>'+
-      '<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-dim);padding:0 4px;user-select:none;">'+
-        '<input type="checkbox" id="auto-refresh-toggle"'+(state.autoRefresh?' checked':'')+'/> Auto'+
-      '</label>'+
-      '<select id="auto-refresh-interval" class="btn btn-ghost btn-sm" style="padding:6px 8px;">'+
-        '<option value="5000"'+(state.autoRefreshMs===5000?' selected':'')+'>5s</option>'+
-        '<option value="10000"'+(state.autoRefreshMs===10000?' selected':'')+'>10s</option>'+
-      '</select>'+
       '<button class="btn btn-ghost btn-sm" id="printer-settings-btn">Printer Settings</button>'+
     '</div>';
   }
@@ -980,10 +971,6 @@
   function bindPageActions(){
     var refreshBtn = document.getElementById('refresh-data-btn');
     if(refreshBtn) refreshBtn.addEventListener('click', refreshData);
-    var autoToggle = document.getElementById('auto-refresh-toggle');
-    if(autoToggle) autoToggle.addEventListener('change', function(){ setAutoRefresh(autoToggle.checked); });
-    var autoInterval = document.getElementById('auto-refresh-interval');
-    if(autoInterval) autoInterval.addEventListener('change', function(){ setAutoRefreshInterval(parseInt(autoInterval.value, 10)); });
     var printerBtn = document.getElementById('printer-settings-btn');
     if(printerBtn) printerBtn.addEventListener('click', function(){ state.printerModalOpen = true; render(); });
 
@@ -1042,39 +1029,13 @@
     return canDeleteBills() ? '<button class="btn btn-danger btn-sm" data-delete-bill="'+b.id+'" title="Delete this bill — use only if it was added in error">Delete (added in error)</button>' : '';
   }
 
-  // Auto Refresh — optional toggle + interval picker (5s/10s) shown next to
-  // the Refresh Data button. When on, silently re-pulls from the Sheet every
-  // state.autoRefreshMs without the busy overlay/alerts a manual refresh
-  // shows, so it doesn't interrupt whatever the user is doing.
-  var autoRefreshTimer = null;
-  function startAutoRefreshTimer(){
-    if(autoRefreshTimer) clearInterval(autoRefreshTimer);
-    autoRefreshTimer = setInterval(function(){
-      if(state.busyMsg) return; // don't collide with a manual refresh/other busy op
-      refreshData({silent:true});
-    }, state.autoRefreshMs);
-  }
-  function setAutoRefresh(enabled){
-    state.autoRefresh = enabled;
-    if(enabled){
-      startAutoRefreshTimer();
-    } else if(autoRefreshTimer){
-      clearInterval(autoRefreshTimer);
-      autoRefreshTimer = null;
-    }
-  }
-  function setAutoRefreshInterval(ms){
-    state.autoRefreshMs = ms;
-    if(state.autoRefresh) startAutoRefreshTimer(); // restart with new interval
-  }
-
-  async function refreshData(opts){
-    var silent = !!(opts && opts.silent);
+  async function refreshData(){
     if(!sheetConfigured()){
-      if(!silent) alert('Not connected to Google Sheets yet — nothing to refresh from. See the login screen for setup info.');
+      alert('Not connected to Google Sheets yet — nothing to refresh from. See the login screen for setup info.');
       return;
     }
-    if(!silent){ state.busyMsg = 'Refreshing data…'; render(); }
+    state.busyMsg = 'Refreshing data…';
+    render();
     try{
       var results = await Promise.all([
         storageGet(STORE_KEY_ITEMS),
@@ -1091,9 +1052,9 @@
       if(returns) state.returns = returns;
       saveLocalCache();
     }catch(e){
-      if(!silent) alert('Could not refresh data: '+(e.message||e));
+      alert('Could not refresh data: '+(e.message||e));
     }
-    if(!silent) state.busyMsg = '';
+    state.busyMsg = '';
     render();
   }
 
