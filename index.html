@@ -18,6 +18,7 @@
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <noscript><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"></noscript>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --ink:#0F3D75;
@@ -512,6 +513,7 @@
   };
 
   var STORE_KEY_ITEMS='pos:items', STORE_KEY_USERS='pos:users', STORE_KEY_BILLS='pos:bills', STORE_KEY_SHOP='pos:shop', STORE_KEY_PRINTERS='pos:printers', STORE_KEY_RETURNS='pos:returns';
+  var LOCAL_CACHE_KEY='pos:cache:v1';
   var THEME_PRESETS = ['#2563EB','#16A34A','#7C3AED','#DC2626','#0D9488','#EA580C','#DB2777','#0F3D75'];
   function sameColor(a,b){ return (a||'').toLowerCase()===(b||'').toLowerCase(); }
 
@@ -570,6 +572,10 @@
     reportPayment:'all',
     reportSelectedDate: todayISO(),
     expandedDay:null,
+    monthlyRepMode:'month',
+    monthlyRepMonth: todayISO().slice(0,7),
+    monthlyRepFrom:'',
+    monthlyRepTo:'',
     adminTab:'items',
     itemForm:null,
     userForm:null,
@@ -1044,6 +1050,7 @@
       if(bills) state.bills = bills;
       if(shop) state.shop = Object.assign({}, state.shop, shop);
       if(returns) state.returns = returns;
+      saveLocalCache();
     }catch(e){
       alert('Could not refresh data: '+(e.message||e));
     }
@@ -1998,6 +2005,34 @@
     }
   }
 
+  // ---------------- LOCAL FAST-LOAD CACHE ----------------
+  // A localStorage mirror of the last known-good Sheet data. This is
+  // purely a speed layer — the Google Sheet stays the single source of
+  // truth and every save still goes there exactly as before. The cache
+  // only lets boot() paint real data immediately instead of showing a
+  // spinner for however long the Apps Script round-trip takes, and it is
+  // refreshed every time a Sheet read or write succeeds so it stays in
+  // sync with the real data rather than going stale.
+  function loadLocalCache(){
+    try{
+      var raw = localStorage.getItem(LOCAL_CACHE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    }catch(e){ return null; }
+  }
+  function saveLocalCache(){
+    try{
+      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({
+        items: state.items,
+        users: state.users,
+        bills: state.bills,
+        shop: shopForStorage(state.shop),
+        returns: state.returns,
+        printers: state.printerHistory,
+        ts: Date.now()
+      }));
+    }catch(e){}
+  }
+
   function seedDefaults(){
     state.items = [
       {id:uid('it'), name:'Rice 5kg', price:1450, stock:32, category:'Grocery', purchasePrice:1180},
@@ -2051,6 +2086,24 @@
   }
 
   async function boot(){
+    // Fast path: hydrate instantly from the local cache (if any) so the
+    // app can paint real data right away instead of the loading spinner,
+    // while the Google Sheet round-trip (often slow) happens underneath.
+    // The live fetch below still runs immediately after and overwrites
+    // this — the cache is only ever a head start, never a replacement.
+    var cached = loadLocalCache();
+    if(cached){
+      if(cached.items) state.items = cached.items;
+      if(cached.users) state.users = cached.users;
+      if(cached.bills) state.bills = cached.bills;
+      if(cached.shop) state.shop = Object.assign({}, state.shop, cached.shop);
+      if(cached.returns) state.returns = cached.returns;
+      if(cached.printers) state.printerHistory = cached.printers;
+      state.items.forEach(ensureItemBatches);
+      applyAppTitle();
+      applyTheme();
+      state.booted = true;
+    }
     // Paint the Admin/Cashier picker right away — it doesn't need any
     // fetched data to display, so there's no reason to make the person
     // stare at a blank screen while these requests are still in flight.
@@ -2115,6 +2168,10 @@
     if(printersR.status==='fulfilled') state.printerHistory = printers || [];
     // Backfill batches for items saved before purchase-price tracking existed.
     state.items.forEach(ensureItemBatches);
+    // Refresh the fast-load cache with this confirmed-live data (only once
+    // items/users actually came from the Sheet — never cache the "request
+    // failed, kept old state" case as if it were fresh).
+    if(itemsR.status==='fulfilled' && usersR.status==='fulfilled') saveLocalCache();
     try{
       var lastPrinter = localStorage.getItem(PRINTER_STORE_KEY);
       if(lastPrinter) state.printer.status = 'Last used: '+lastPrinter+'. Reconnecting…';
@@ -2166,6 +2223,7 @@
     // rebuilds+uploads — that background flood of requests was the main
     // thing making shop-settings saves feel sluggish.
     if(ok) syncReadableSheets(key);
+    if(ok) saveLocalCache();
     return ok;
   }
 
@@ -4153,6 +4211,8 @@
   }
 
   function renderReports(){
+    var mrMode = state.monthlyRepMode || 'month';
+    var mrMonthVal = state.monthlyRepMonth || todayISO().slice(0,7);
     var selDate = state.reportSelectedDate || todayISO();
     var selSummary = selectedDateSummary(selDate);
     var selDateLabel = new Date(selDate+'T00:00:00').toLocaleDateString(undefined,{weekday:'short', year:'numeric', month:'short', day:'numeric'});
@@ -4320,6 +4380,24 @@
     '<div class="card highlight-red" style="margin-bottom:18px;"><div class="section-head"><h3>&#128100; Account (credit) sales &mdash; by customer ('+selDateLabel+')</h3></div>'+accountDetailHtml+'</div>'+
 
     '<div class="card" style="margin-bottom:18px;">'+
+      '<div class="section-head"><h3>&#128196; Sales Report &mdash; PDF</h3></div>'+
+      '<div class="note-box">A shareable PDF statement with total cash, cheque and credit sales, customer balances due, and full sales details for the period.</div>'+
+      '<div class="form-row" style="margin-top:10px;">'+
+        '<div class="field"><label>Report for</label><select id="mrep-mode">'+
+          '<option value="month" '+(mrMode==='month'?'selected':'')+'>Whole month</option>'+
+          '<option value="range" '+(mrMode==='range'?'selected':'')+'>Date to date</option>'+
+        '</select></div>'+
+        '<div class="field" id="mrep-month-field" style="'+(mrMode==='range'?'display:none;':'')+'"><label>Month</label><input type="month" id="mrep-month" value="'+escapeHtml(mrMonthVal)+'"></div>'+
+        '<div class="field" id="mrep-from-field" style="'+(mrMode==='month'?'display:none;':'')+'"><label>From</label><input type="date" id="mrep-from" value="'+escapeHtml(state.monthlyRepFrom||'')+'"></div>'+
+        '<div class="field" id="mrep-to-field" style="'+(mrMode==='month'?'display:none;':'')+'"><label>To</label><input type="date" id="mrep-to" value="'+escapeHtml(state.monthlyRepTo||'')+'"></div>'+
+      '</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+        '<button class="btn btn-primary btn-sm" id="mrep-share">Share Report as PDF</button>'+
+        '<button class="btn btn-ghost btn-sm" id="mrep-download">Download PDF</button>'+
+      '</div>'+
+    '</div>'+
+
+    '<div class="card" style="margin-bottom:18px;">'+
       '<div class="section-head"><h3>Search</h3></div>'+
       '<div class="form-row">'+
         '<div class="field"><label>From</label><input type="date" id="rep-from" value="'+escapeHtml(state.reportFrom)+'"></div>'+
@@ -4391,6 +4469,277 @@
         render();
       });
     });
+
+    // Monthly / date-range PDF report
+    var mrepMode = document.getElementById('mrep-mode');
+    if(mrepMode) mrepMode.addEventListener('change', function(e){
+      state.monthlyRepMode = e.target.value;
+      render();
+    });
+    var mrepMonth = document.getElementById('mrep-month');
+    if(mrepMonth) mrepMonth.addEventListener('change', function(e){ state.monthlyRepMonth = e.target.value; });
+    var mrepFrom = document.getElementById('mrep-from');
+    if(mrepFrom) mrepFrom.addEventListener('change', function(e){ state.monthlyRepFrom = e.target.value; });
+    var mrepTo = document.getElementById('mrep-to');
+    if(mrepTo) mrepTo.addEventListener('change', function(e){ state.monthlyRepTo = e.target.value; });
+    var mrepShare = document.getElementById('mrep-share');
+    if(mrepShare) mrepShare.addEventListener('click', function(){ shareMonthlyReportPdf(); });
+    var mrepDownload = document.getElementById('mrep-download');
+    if(mrepDownload) mrepDownload.addEventListener('click', function(){ downloadMonthlyReportPdf(); });
+  }
+
+  // ---------------- MONTHLY / RANGE SALES REPORT (PDF) ----------------
+  // Resolves the report period from the form: either the whole selected
+  // calendar month, or a custom From/To date range.
+  function monthlyReportRange(){
+    if(state.monthlyRepMode==='range'){
+      var f = state.monthlyRepFrom||'', t = state.monthlyRepTo||'';
+      var label = (f||'…')+' to '+(t||'…');
+      return {from:f, to:t, label:label};
+    }
+    var m = state.monthlyRepMonth || todayISO().slice(0,7); // 'YYYY-MM'
+    var y = parseInt(m.slice(0,4),10), mo = parseInt(m.slice(5,7),10);
+    var lastDay = new Date(y, mo, 0).getDate();
+    var from = m+'-01', to = m+'-'+String(lastDay).padStart(2,'0');
+    var label = (isNaN(y)||isNaN(mo)) ? m : new Date(y, mo-1, 1).toLocaleDateString(undefined,{month:'long', year:'numeric'});
+    return {from:from, to:to, label:label};
+  }
+
+  // Same cash/cheque/credit definitions used on the Reports page banners
+  // and the "…By Date" mirror tabs, aggregated across a whole date range
+  // instead of a single day.
+  function reportRangeSummary(from, to){
+    var inRange = function(day){ return (!from || day>=from) && (!to || day<=to); };
+    var cashBills=[], chequeBills=[], creditBills=[];
+    var acctPaidNow=0, acctReceivePayment=0;
+    state.bills.forEach(function(b){
+      var day = localDay(b.dateISO);
+      if(inRange(day)){
+        if(b.payment==='cash') cashBills.push(b);
+        else if(b.payment==='cheque') chequeBills.push(b);
+        else if(b.payment==='account') creditBills.push(b);
+      }
+      if(b.payment==='account'){
+        (b.payments||[]).forEach(function(p){
+          if(!inRange(localDay(p.dateISO))) return;
+          if(p.note==='Payment at time of sale') acctPaidNow += (p.amount||0);
+          else acctReceivePayment += (p.amount||0);
+        });
+      }
+    });
+    var sortByDate = function(a,b){ return new Date(a.dateISO)-new Date(b.dateISO); };
+    cashBills.sort(sortByDate); chequeBills.sort(sortByDate); creditBills.sort(sortByDate);
+    var cashBillTotal = cashBills.reduce(function(s,b){return s+b.total;},0);
+    var chequeTotal = chequeBills.reduce(function(s,b){return s+b.total;},0);
+    var creditBillTotal = creditBills.reduce(function(s,b){return s+b.total;},0);
+    var creditBalanceDue = creditBills.reduce(function(s,b){return s+billBalance(b);},0);
+    var allInRange = state.bills.filter(function(b){ return inRange(localDay(b.dateISO)); });
+    return {
+      cashBills:cashBills, chequeBills:chequeBills, creditBills:creditBills,
+      cashBillTotal:cashBillTotal, acctPaidNow:acctPaidNow, acctReceivePayment:acctReceivePayment,
+      totalCashSales: cashBillTotal+acctPaidNow+acctReceivePayment,
+      chequeTotal:chequeTotal, creditBillTotal:creditBillTotal, creditBalanceDue:creditBalanceDue,
+      allBills: allInRange,
+      totalRevenue: allInRange.reduce(function(s,b){return s+b.total;},0),
+      totalDiscount: allInRange.reduce(function(s,b){return s+(b.discount||0);},0),
+      totalItemsSold: allInRange.reduce(function(s,b){return s+billItemCount(b);},0)
+    };
+  }
+
+  // Builds the professional PDF statement. Returns null if the jsPDF
+  // library (loaded from CDN) hasn't finished loading yet.
+  function buildMonthlyReportPdf(range){
+    var ctor = window.jspdf && window.jspdf.jsPDF;
+    if(!ctor) return null;
+    var doc = new ctor({unit:'mm', format:'a4'});
+    var pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    var marginL = 14, marginR = 14, usableW = pageW-marginL-marginR;
+    var INK=[15,61,117], DIM=[92,112,137], LINE=[217,228,245], RED=[192,45,45], GREEN=[22,101,52], TEXT=[30,34,48];
+    var y = 18;
+
+    function newPageIfNeeded(need){
+      if(y+need > pageH-18){ doc.addPage(); y = 18; }
+    }
+    function sectionTitle(text){
+      newPageIfNeeded(12);
+      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(INK[0],INK[1],INK[2]);
+      doc.text(text, marginL, y);
+      y += 2;
+      doc.setDrawColor(INK[0],INK[1],INK[2]); doc.setLineWidth(0.4);
+      doc.line(marginL, y, pageW-marginR, y);
+      y += 6;
+    }
+    function kvRow(label, value, bold, color){
+      newPageIfNeeded(6);
+      doc.setFont('helvetica', bold?'bold':'normal'); doc.setFontSize(9);
+      var c = color || TEXT;
+      doc.setTextColor(c[0],c[1],c[2]);
+      doc.text(label, marginL+2, y);
+      doc.text(String(value), pageW-marginR-1, y, {align:'right'});
+      y += 5.6;
+    }
+    function table(headers, rows, colWidths, aligns, emptyMsg){
+      if(!rows.length){
+        newPageIfNeeded(6);
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.8); doc.setTextColor(DIM[0],DIM[1],DIM[2]);
+        doc.text(emptyMsg||'No records for this period.', marginL+2, y);
+        y += 6.5;
+        return;
+      }
+      var lineH = 5.4;
+      newPageIfNeeded(lineH+2);
+      doc.setFillColor(INK[0],INK[1],INK[2]);
+      doc.rect(marginL, y-3.9, usableW, lineH+1.2, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(255,255,255);
+      var x = marginL;
+      headers.forEach(function(h,i){
+        if(aligns[i]==='right') doc.text(h, x+colWidths[i]-2, y, {align:'right'});
+        else doc.text(h, x+2, y);
+        x += colWidths[i];
+      });
+      y += lineH+1.6;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(TEXT[0],TEXT[1],TEXT[2]);
+      rows.forEach(function(r, ri){
+        newPageIfNeeded(lineH);
+        if(ri%2===1){ doc.setFillColor(244,248,253); doc.rect(marginL, y-3.9, usableW, lineH, 'F'); }
+        var x2 = marginL;
+        r.forEach(function(cell,ci){
+          var txt = String(cell);
+          if(aligns[ci]==='right') doc.text(txt, x2+colWidths[ci]-2, y, {align:'right'});
+          else doc.text(txt, x2+2, y);
+          x2 += colWidths[ci];
+        });
+        y += lineH;
+      });
+      doc.setDrawColor(LINE[0],LINE[1],LINE[2]); doc.setLineWidth(0.3);
+      doc.line(marginL, y-lineH+1.6, pageW-marginR, y-lineH+1.6);
+      y += 3;
+    }
+
+    // ----- Header -----
+    doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(INK[0],INK[1],INK[2]);
+    doc.text(state.shop.name||'BILL APP', marginL, y);
+    var hy = y+5.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(DIM[0],DIM[1],DIM[2]);
+    if(state.shop.address){ doc.text(state.shop.address, marginL, hy); hy += 4.4; }
+    if(state.shop.phone){ doc.text('Tel: '+state.shop.phone, marginL, hy); hy += 4.4; }
+
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(INK[0],INK[1],INK[2]);
+    doc.text('SALES REPORT', pageW-marginR, 18, {align:'right'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(DIM[0],DIM[1],DIM[2]);
+    doc.text('Period: '+range.label, pageW-marginR, 24, {align:'right'});
+    doc.text('Generated: '+new Date().toLocaleString(), pageW-marginR, 29, {align:'right'});
+
+    y = Math.max(hy, 32);
+    doc.setDrawColor(INK[0],INK[1],INK[2]); doc.setLineWidth(0.7);
+    doc.line(marginL, y, pageW-marginR, y);
+    y += 9;
+
+    var data = reportRangeSummary(range.from, range.to);
+
+    // ----- Summary boxes -----
+    var boxW = (usableW-8)/3, boxH = 20;
+    [
+      {label:'TOTAL CASH SALES', val:data.totalCashSales, color:GREEN},
+      {label:'TOTAL CHEQUE SALES', val:data.chequeTotal, color:INK},
+      {label:'TOTAL CREDIT SALES', val:data.creditBillTotal, color:RED}
+    ].forEach(function(b,i){
+      var bx = marginL + i*(boxW+4);
+      doc.setDrawColor(LINE[0],LINE[1],LINE[2]); doc.setFillColor(248,250,253);
+      doc.roundedRect(bx, y, boxW, boxH, 1.6, 1.6, 'FD');
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(DIM[0],DIM[1],DIM[2]);
+      doc.text(b.label, bx+4, y+7);
+      doc.setFont('helvetica','bold'); doc.setFontSize(12.5); doc.setTextColor(b.color[0],b.color[1],b.color[2]);
+      doc.text(money(b.val), bx+4, y+15.5);
+    });
+    y += boxH+10;
+
+    // ----- Cash Sales Details -----
+    sectionTitle('Cash Sales Details');
+    table(['Date','Bill No','Customer','Amount'],
+      data.cashBills.map(function(b){ return [localDay(b.dateISO), b.no||'', b.customerName||'-', money(b.total)]; }),
+      [26,32,usableW-26-32-40,40], ['left','left','left','right'], 'No cash sales in this period.');
+    kvRow('Cash bills subtotal', money(data.cashBillTotal));
+    kvRow('Account payments received (at time of sale)', money(data.acctPaidNow));
+    kvRow('Account payments received (against old balance)', money(data.acctReceivePayment));
+    kvRow('TOTAL CASH SALES', money(data.totalCashSales), true, GREEN);
+    y += 4;
+
+    // ----- Cheque Sales Details -----
+    sectionTitle('Cheque Sales Details');
+    table(['Date','Bill No','Cheque No','Customer','Amount'],
+      data.chequeBills.map(function(b){ return [localDay(b.dateISO), b.no||'', b.chequeNo||'-', b.customerName||'-', money(b.total)]; }),
+      [24,26,26,usableW-24-26-26-36,36], ['left','left','left','left','right'], 'No cheque sales in this period.');
+    kvRow('TOTAL CHEQUE SALES', money(data.chequeTotal), true, INK);
+    y += 4;
+
+    // ----- Credit Sales Details -----
+    sectionTitle('Credit Sales Details');
+    table(['Date','Bill No','Customer','Bill Amount','Balance Due'],
+      data.creditBills.map(function(b){ return [localDay(b.dateISO), b.no||'', b.customerName||'-', money(b.total), money(billBalance(b))]; }),
+      [24,28,usableW-24-28-36-36,36,36], ['left','left','left','right','right'], 'No credit sales in this period.');
+    kvRow('Total credit sales (bill amount)', money(data.creditBillTotal));
+    kvRow('Balance due outstanding (this period\'s bills)', money(data.creditBalanceDue), true, RED);
+    y += 4;
+
+    // ----- Customer Balances Due -----
+    sectionTitle('Customer Balances Due (as of '+new Date().toLocaleDateString()+')');
+    var owing = buildCustomerStats().filter(function(c){ return c.totalBalance>0.004; }).sort(function(a,b){ return b.totalBalance-a.totalBalance; });
+    table(['Customer','Phone','Balance Due'],
+      owing.map(function(c){ return [c.name, c.phone||'-', money(c.totalBalance)]; }),
+      [usableW-40-40,40,40], ['left','left','right'], 'No customers currently owe a balance.');
+    var totalOwing = owing.reduce(function(s,c){ return s+c.totalBalance; },0);
+    kvRow('TOTAL OUTSTANDING (all customers)', money(totalOwing), true, RED);
+    y += 4;
+
+    // ----- Sales Summary -----
+    sectionTitle('Sales Summary');
+    kvRow('Total bills (period)', data.allBills.length);
+    kvRow('Total items sold', data.totalItemsSold);
+    kvRow('Total revenue (period)', money(data.totalRevenue));
+    kvRow('Total discount given', money(data.totalDiscount));
+    kvRow('Average bill value', money(data.allBills.length ? data.totalRevenue/data.allBills.length : 0));
+
+    // ----- Footer on every page -----
+    var pageCount = doc.internal.getNumberOfPages();
+    for(var p=1; p<=pageCount; p++){
+      doc.setPage(p);
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(DIM[0],DIM[1],DIM[2]);
+      if(state.shop.footer) doc.text(state.shop.footer, marginL, pageH-10);
+      doc.text('Page '+p+' of '+pageCount, pageW-marginR, pageH-10, {align:'right'});
+    }
+    return doc;
+  }
+
+  function monthlyReportFileName(range){
+    var shopName = (state.shop.name||'Shop').replace(/[^\w\-]+/g,'_');
+    return shopName+'_Sales_Report_'+(range.from||'start')+'_to_'+(range.to||'end')+'.pdf';
+  }
+
+  async function shareMonthlyReportPdf(){
+    var range = monthlyReportRange();
+    if(state.monthlyRepMode==='range' && (!range.from || !range.to)){ alert('Pick both a From and To date first.'); return; }
+    var doc = buildMonthlyReportPdf(range);
+    if(!doc){ alert('The PDF library is still loading — please try again in a moment.'); return; }
+    var fileName = monthlyReportFileName(range);
+    var blob = doc.output('blob');
+    var file;
+    try{ file = new File([blob], fileName, {type:'application/pdf'}); }catch(e){ /* File ctor unsupported */ }
+    if(file && navigator.canShare && navigator.canShare({files:[file]})){
+      try{
+        await navigator.share({files:[file], title:'Sales Report — '+range.label, text:(state.shop.name||'')+' — Sales Report for '+range.label});
+        return;
+      }catch(e){ if(e && e.name==='AbortError') return; }
+    }
+    doc.save(fileName);
+  }
+
+  function downloadMonthlyReportPdf(){
+    var range = monthlyReportRange();
+    if(state.monthlyRepMode==='range' && (!range.from || !range.to)){ alert('Pick both a From and To date first.'); return; }
+    var doc = buildMonthlyReportPdf(range);
+    if(!doc){ alert('The PDF library is still loading — please try again in a moment.'); return; }
+    doc.save(monthlyReportFileName(range));
   }
 
   // ---------------- PROFIT (admin only) ----------------
