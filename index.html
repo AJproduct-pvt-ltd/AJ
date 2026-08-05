@@ -995,6 +995,14 @@
         shareBillImage(bill);
       });
     });
+    document.querySelectorAll('[data-view-bill]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var id = btn.getAttribute('data-view-bill');
+        var bill = state.bills.find(function(b){ return b.id===id; });
+        if(!bill) return;
+        viewBillImage(bill);
+      });
+    });
 
     // "Added in error" — lets an admin permanently remove a bill that was
     // never a real sale. Restores stock for the bill's line items (best
@@ -1498,6 +1506,57 @@
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
     }, 'image/png');
+  }
+
+  // Opens a full-screen overlay showing the bill rendered as a PNG image.
+  // Lets the user long-press / right-click to save, or just inspect it
+  // before deciding whether to share. No external libraries needed.
+  function viewBillImage(bill){
+    if(!bill) return;
+    var canvas;
+    try{ canvas = billToCanvas(bill); }
+    catch(e){ alert('Could not render the bill image: '+(e.message||e)); return; }
+    var dataUrl = canvas.toDataURL('image/png');
+    var overlay = document.createElement('div');
+    overlay.id = 'bill-img-overlay';
+    overlay.style.cssText = [
+      'position:fixed;inset:0;z-index:9999;',
+      'background:rgba(15,61,117,.82);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);',
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;',
+      'padding:16px;gap:14px;'
+    ].join('');
+    var img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = 'Bill '+bill.no;
+    img.style.cssText = [
+      'max-width:min(420px,100%);max-height:80vh;',
+      'border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.55);',
+      'display:block;'
+    ].join('');
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center;';
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕  Close';
+    closeBtn.style.cssText = [
+      'padding:9px 22px;background:#FFFFFF;border:none;border-radius:8px;',
+      'font-family:inherit;font-weight:700;font-size:13.5px;cursor:pointer;',
+      'color:#0F3D75;box-shadow:0 2px 8px rgba(0,0,0,.18);'
+    ].join('');
+    var shareBtn2 = document.createElement('button');
+    shareBtn2.textContent = '↗  Share';
+    shareBtn2.style.cssText = [
+      'padding:9px 22px;background:#2563EB;border:none;border-radius:8px;',
+      'font-family:inherit;font-weight:700;font-size:13.5px;cursor:pointer;',
+      'color:#fff;box-shadow:0 2px 8px rgba(37,99,235,.35);'
+    ].join('');
+    shareBtn2.addEventListener('click', function(e){ e.stopPropagation(); shareBillImage(bill); });
+    closeBtn.addEventListener('click', function(){ document.body.removeChild(overlay); });
+    overlay.addEventListener('click', function(e){ if(e.target===overlay) document.body.removeChild(overlay); });
+    btnRow.appendChild(shareBtn2);
+    btnRow.appendChild(closeBtn);
+    overlay.appendChild(img);
+    overlay.appendChild(btnRow);
+    document.body.appendChild(overlay);
   }
 
   // =====================================================================
@@ -3214,7 +3273,10 @@
           '<button class="btn btn-ghost" id="print-again" style="flex:1;">Print (browser)</button>'+
         '</div>'
       ) : '<div class="printer-msg">Printing is turned off (Admin &gt; Shop settings).</div>')+
-      '<button class="btn btn-amber btn-block" id="share-bill-btn" style="margin-top:8px;">Share bill as photo</button>'+
+      '<div style="display:flex;gap:8px;margin-top:8px;">'+
+        '<button class="btn btn-ghost btn-block" id="view-bill-btn" style="flex:1;">View as photo</button>'+
+        '<button class="btn btn-amber btn-block" id="share-bill-btn" style="flex:1;">Share as photo</button>'+
+      '</div>'+
       '<button class="btn btn-ghost btn-block" id="receipt-done" style="margin-top:8px;">Done</button>'+
     '</div></div>';
   }
@@ -3226,6 +3288,7 @@
     var btPrintBtn = document.getElementById('bt-print');
     var btConnectBtn = document.getElementById('bt-connect');
     var shareBtn = document.getElementById('share-bill-btn');
+    var viewBtn = document.getElementById('view-bill-btn');
     function closeIt(){ state.showReceipt=false; state.printer.status=''; render(); }
     if(closeBtn) closeBtn.addEventListener('click', closeIt);
     if(doneBtn) doneBtn.addEventListener('click', closeIt);
@@ -3237,6 +3300,7 @@
     if(btPrintBtn) btPrintBtn.addEventListener('click', function(){ printBillToBluetooth(state.lastBill); });
     if(btConnectBtn) btConnectBtn.addEventListener('click', connectPrinter);
     if(shareBtn) shareBtn.addEventListener('click', function(){ shareBillImage(state.lastBill); });
+    if(viewBtn) viewBtn.addEventListener('click', function(){ viewBillImage(state.lastBill); });
   }
 
   // Receipt for a single payment recorded against a credit ("on account")
@@ -3346,6 +3410,7 @@
         '<button class="btn btn-ghost btn-sm" data-toggle-edit="'+b.id+'">Edit Bill</button>'+
         (billHasReturnableQty(b) ? '<button class="btn btn-amber btn-sm" data-toggle-return="'+b.id+'" title="Customer is returning some or all items from this bill">Return Bill</button>' : '')+
         (printingEnabled() ? '<button class="btn btn-ghost btn-sm" data-print-bill="'+b.id+'">Print Bill</button>' : '')+
+        '<button class="btn btn-ghost btn-sm" data-view-bill="'+b.id+'">View as photo</button>'+
         '<button class="btn btn-ghost btn-sm" data-share-bill="'+b.id+'">Share as photo</button>'+
         deleteBillButtonHtml(b)+
       '</div>'+
@@ -3809,6 +3874,7 @@
           (bal>0.004 ? '<div class="sum-row" style="font-size:12px;"><span>Balance due</span><span class="val" style="color:var(--red);font-weight:700;">'+money(bal)+'</span></div>' : '')+
           '<div class="acct-row-actions" style="margin-top:6px;">'+
             (printingEnabled() ? '<button class="btn btn-ghost btn-sm" data-print-bill="'+b.id+'">Print / Reprint</button>' : '')+
+            '<button class="btn btn-ghost btn-sm" data-view-bill="'+b.id+'">View as photo</button>'+
             '<button class="btn btn-ghost btn-sm" data-share-bill="'+b.id+'">Share as photo</button>'+
             deleteBillButtonHtml(b)+
           '</div>'+
@@ -4205,6 +4271,7 @@
   function billActionButtonsHtml(b){
     return '<div class="acct-row-actions">'+
       (printingEnabled() ? '<button class="btn btn-ghost btn-sm" data-print-bill="'+b.id+'">Print / Reprint</button>' : '')+
+      '<button class="btn btn-ghost btn-sm" data-view-bill="'+b.id+'">View as photo</button>'+
       '<button class="btn btn-ghost btn-sm" data-share-bill="'+b.id+'">Share as photo</button>'+
       deleteBillButtonHtml(b)+
     '</div>';
