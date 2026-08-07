@@ -512,7 +512,7 @@
     trend:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg>'
   };
 
-  var STORE_KEY_ITEMS='pos:items', STORE_KEY_USERS='pos:users', STORE_KEY_BILLS='pos:bills', STORE_KEY_SHOP='pos:shop', STORE_KEY_PRINTERS='pos:printers', STORE_KEY_RETURNS='pos:returns';
+  var STORE_KEY_ITEMS='pos:items', STORE_KEY_USERS='pos:users', STORE_KEY_BILLS='pos:bills', STORE_KEY_SHOP='pos:shop', STORE_KEY_PRINTERS='pos:printers', STORE_KEY_RETURNS='pos:returns', STORE_KEY_DELETED_BILLS='pos:deletedbills';
   var LOCAL_CACHE_KEY='pos:cache:v1';
   var THEME_PRESETS = ['#2563EB','#16A34A','#7C3AED','#DC2626','#0D9488','#EA580C','#DB2777','#0F3D75'];
   function sameColor(a,b){ return (a||'').toLowerCase()===(b||'').toLowerCase(); }
@@ -541,6 +541,7 @@
     users:[],
     bills:[],
     returns:[],
+    deletedBills:[],
     returnForm:null,
     stockReturnForm:null,
     printerHistory:[],
@@ -1018,12 +1019,25 @@
           var item = state.items.find(function(i){ return i.name===it.name; });
           if(item) item.stock = (item.stock||0) + (Number(it.qty)||0);
         });
+        state.deletedBills = state.deletedBills || [];
+        state.deletedBills.push({
+          id: uid('delbill'),
+          dateISO: new Date().toISOString(),
+          billNo: bill.no||'',
+          billDateISO: bill.dateISO||'',
+          customerName: bill.customerName||'',
+          customerPhone: bill.customerPhone||'',
+          total: bill.total||0,
+          payment: bill.payment||'',
+          items: (bill.items||[]).map(function(it){ return {name:it.name, qty:it.qty}; }),
+          deletedBy: state.currentUser.name
+        });
         state.bills = state.bills.filter(function(b){ return b.id!==id; });
         if(state.payFormOpenId===id) state.payFormOpenId=null;
         if(state.billEditForm && state.billEditForm.billId===id) state.billEditForm=null;
         state.busyMsg = 'Deleting bill…';
         render();
-        await Promise.all([persist('bills'), persist('items')]);
+        await Promise.all([persist('bills'), persist('items'), persist('deletedBills')]);
         state.busyMsg = '';
         render();
       });
@@ -1050,14 +1064,16 @@
         storageGet(STORE_KEY_USERS),
         storageGet(STORE_KEY_BILLS),
         storageGet(STORE_KEY_SHOP),
-        storageGet(STORE_KEY_RETURNS)
+        storageGet(STORE_KEY_RETURNS),
+        storageGet(STORE_KEY_DELETED_BILLS)
       ]);
-      var items = results[0], users = results[1], bills = results[2], shop = results[3], returns = results[4];
+      var items = results[0], users = results[1], bills = results[2], shop = results[3], returns = results[4], deletedBills = results[5];
       if(items) state.items = items;
       if(users) state.users = users;
       if(bills) state.bills = bills;
       if(shop) state.shop = Object.assign({}, state.shop, shop);
       if(returns) state.returns = returns;
+      if(deletedBills) state.deletedBills = deletedBills;
       saveLocalCache();
     }catch(e){
       alert('Could not refresh data: '+(e.message||e));
@@ -2086,6 +2102,7 @@
         bills: state.bills,
         shop: shopForStorage(state.shop),
         returns: state.returns,
+        deletedBills: state.deletedBills,
         printers: state.printerHistory,
         ts: Date.now()
       }));
@@ -2157,6 +2174,7 @@
       if(cached.bills) state.bills = cached.bills;
       if(cached.shop) state.shop = Object.assign({}, state.shop, cached.shop);
       if(cached.returns) state.returns = cached.returns;
+      if(cached.deletedBills) state.deletedBills = cached.deletedBills;
       if(cached.printers) state.printerHistory = cached.printers;
       state.items.forEach(ensureItemBatches);
       applyAppTitle();
@@ -2178,9 +2196,10 @@
       storageGet(STORE_KEY_BILLS),
       storageGet(STORE_KEY_SHOP),
       storageGet(STORE_KEY_PRINTERS),
-      storageGet(STORE_KEY_RETURNS)
+      storageGet(STORE_KEY_RETURNS),
+      storageGet(STORE_KEY_DELETED_BILLS)
     ]);
-    var itemsR = settled[0], usersR = settled[1], billsR = settled[2], shopR = settled[3], printersR = settled[4], returnsR = settled[5];
+    var itemsR = settled[0], usersR = settled[1], billsR = settled[2], shopR = settled[3], printersR = settled[4], returnsR = settled[5], deletedBillsR = settled[6];
     var items = itemsR.status==='fulfilled' ? itemsR.value : undefined;
     var users = usersR.status==='fulfilled' ? usersR.value : undefined;
     var bills = billsR.status==='fulfilled' ? billsR.value : undefined;
@@ -2206,13 +2225,15 @@
         storageSet(STORE_KEY_USERS, state.users),
         storageSet(STORE_KEY_BILLS, state.bills),
         storageSet(STORE_KEY_SHOP, shopForStorage(state.shop)),
-        storageSet(STORE_KEY_RETURNS, state.returns)
+        storageSet(STORE_KEY_RETURNS, state.returns),
+        storageSet(STORE_KEY_DELETED_BILLS, state.deletedBills)
       ]);
     } else {
       state.items = items;
       state.users = users;
       if(billsR.status==='fulfilled') state.bills = bills || [];
       if(returnsR.status==='fulfilled') state.returns = returns || [];
+      if(deletedBillsR.status==='fulfilled') state.deletedBills = deletedBillsR.value || [];
       if(shop) state.shop = Object.assign({}, state.shop, shop);
     }
     if(anyFailed){
@@ -2272,6 +2293,7 @@
     if(key==='bills') ok = await storageSet(STORE_KEY_BILLS, state.bills);
     if(key==='shop') ok = await storageSet(STORE_KEY_SHOP, shopForStorage(state.shop));
     if(key==='returns') ok = await storageSet(STORE_KEY_RETURNS, state.returns);
+    if(key==='deletedBills') ok = await storageSet(STORE_KEY_DELETED_BILLS, state.deletedBills);
     // Fire-and-forget: also mirror the data into separate, human-readable
     // tabs in the same Google Sheet (Bills, Shop Details, Customers,
     // Customer Statement, Stock, Stock In-Out, Accounts, Cheque Details,
@@ -3474,6 +3496,7 @@
     var collFrom = hasDateFilter ? dateFrom : todayStr;
     var collTo = hasDateFilter ? dateTo : todayStr;
     var collectedAmt = 0;
+    var collectedList = [];
     state.bills.forEach(function(b){
       if(b.payment!=='account') return;
       (b.payments||[]).forEach(function(p){
@@ -3481,8 +3504,10 @@
         if(collFrom && day < collFrom) return;
         if(collTo && day > collTo) return;
         collectedAmt += p.amount;
+        collectedList.push({billNo:b.no, billId:b.id, custName:b.customerName||'(no name)', custPhone:b.customerPhone||'', amount:p.amount, dateISO:p.dateISO, note:p.note||'', payId:p.id});
       });
     });
+    collectedList.sort(function(a,c){ return new Date(c.dateISO)-new Date(a.dateISO); });
     var collectedLabel = hasDateFilter ? ('Collected ('+escapeHtml(dateFrom||'…')+' &rarr; '+escapeHtml(dateTo||'…')+')') : 'Collected Today';
 
     // "All Bills" now really means all bills (any date), not just today's —
@@ -3518,6 +3543,28 @@
           '<div class="stat-card"><div class="lbl">'+collectedLabel+'</div><div class="val">'+money(collectedAmt)+'</div></div>'+
         '</div>';
 
+    var collectedRowsHtml = collectedList.map(function(p){
+      return '<tr>'+
+        '<td>'+escapeHtml(p.billNo)+'</td>'+
+        '<td>'+new Date(p.dateISO).toLocaleString()+'</td>'+
+        '<td>'+escapeHtml(p.custName)+(p.custPhone?' <span style="color:var(--text-dim);font-size:11.5px;">('+escapeHtml(p.custPhone)+')</span>':'')+'</td>'+
+        '<td class="num">'+money(p.amount)+'</td>'+
+        '<td>'+escapeHtml(p.note||'&mdash;')+'</td>'+
+        '<td style="white-space:nowrap;">'+
+          '<button class="btn btn-ghost btn-sm" data-print-payment="'+p.billId+'|'+p.payId+'" style="margin-right:4px;">&#128424; Receipt</button>'+
+          '<button class="btn btn-amber btn-sm" data-return-payment="'+p.billId+'|'+p.payId+'" style="margin-right:4px;" title="Reverse this payment — money returned to customer">&#8617; Return</button>'+
+          (canDeleteBills() ? '<button class="btn btn-danger btn-sm" data-delete-payment="'+p.billId+'|'+p.payId+'" title="Delete this payment — use only if recorded in error">&#128465; Delete</button>' : '')+
+        '</td>'+
+      '</tr>';
+    }).join('');
+
+    var collectedListHtml = tab==='today' ? '' :
+      '<div class="card" style="margin-top:16px;"><div class="section-head"><h3>'+collectedLabel+' &mdash; Payments ('+collectedList.length+')</h3></div>'+
+      (collectedRowsHtml
+        ? '<table><thead><tr><th>Bill</th><th>Date &amp; Time</th><th>Customer</th><th>Amount</th><th>Note</th><th></th></tr></thead><tbody>'+collectedRowsHtml+'</tbody></table>'
+        : '<div class="empty-note">No payments collected '+(hasDateFilter?'in this date range':'today')+' yet.</div>')+
+      '</div>';
+
     var emptyMsg = tab==='today'
       ? ('No bills'+((q||hasDateFilter)?' match this search/date filter.':' yet.'))
       : ('No account (credit) bills'+((q||hasDateFilter)?' match this search/date filter.':' yet. Sell something with payment type &quot;Account&quot; to see it here.'));
@@ -3537,6 +3584,7 @@
       pageActionsHtml()+
       tabsHtml+
       statsHtml+
+      collectedListHtml+
       '<div class="search-row"><input id="acct-search" placeholder="Search by customer, phone, bill no., or date…" value="'+escapeHtml(state.acctSearch||'')+'" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div>'+
       dateFilterHtml+
       (rows || '<div class="empty-note">'+emptyMsg+'</div>');
@@ -3645,12 +3693,17 @@
         bill.payments = bill.payments || [];
         var newPayment = {id:uid('pay'), dateISO:new Date().toISOString(), amount:amount, note:'Payment received', receivedBy: state.currentUser.name};
         bill.payments.push(newPayment);
+        var printingNow = printingEnabled();
+        if(printingNow){
+          btn.disabled = true;
+          btn.textContent = 'Printing…';
+        }
         await persist('bills');
         state.payFormOpenId = null;
         state.lastPayment = {billId: bill.id, paymentId: newPayment.id};
         state.showPaymentReceipt = true;
         render();
-        if(printingEnabled()){
+        if(printingNow){
           var ctx = findPaymentContext(bill.id, newPayment.id);
           if(state.printer.connected){
             await printPaymentReceiptToBluetooth(ctx);
@@ -3667,6 +3720,46 @@
         var parts = btn.getAttribute('data-print-payment').split('|');
         state.lastPayment = {billId: parts[0], paymentId: parts[1]};
         state.showPaymentReceipt = true;
+        render();
+      });
+    });
+
+    // Return payment — reverses the collection (restores the balance due on the bill).
+    // Use when the shop has physically returned the money to the customer.
+    document.querySelectorAll('[data-return-payment]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var parts = btn.getAttribute('data-return-payment').split('|');
+        var billId = parts[0], payId = parts[1];
+        var bill = state.bills.find(function(b){ return b.id===billId; });
+        if(!bill) return;
+        var payment = (bill.payments||[]).find(function(p){ return p.id===payId; });
+        if(!payment) return;
+        if(!confirm('Return payment of '+money(payment.amount)+' on bill '+bill.no+'?\n\nThis restores the balance due on the bill. Use this when money has been physically returned to the customer.')) return;
+        bill.payments = (bill.payments||[]).filter(function(p){ return p.id!==payId; });
+        state.busyMsg = 'Returning payment…';
+        render();
+        await persist('bills');
+        state.busyMsg = '';
+        render();
+      });
+    });
+
+    // Delete payment — removes a payment recorded in error. Does not imply money
+    // was physically returned; use only when the record itself is a mistake.
+    document.querySelectorAll('[data-delete-payment]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var parts = btn.getAttribute('data-delete-payment').split('|');
+        var billId = parts[0], payId = parts[1];
+        var bill = state.bills.find(function(b){ return b.id===billId; });
+        if(!bill) return;
+        var payment = (bill.payments||[]).find(function(p){ return p.id===payId; });
+        if(!payment) return;
+        if(!confirm('Delete payment of '+money(payment.amount)+' from bill '+bill.no+'?\n\nUse only if this was recorded in error. This cannot be undone.')) return;
+        bill.payments = (bill.payments||[]).filter(function(p){ return p.id!==payId; });
+        state.busyMsg = 'Deleting payment…';
+        render();
+        await persist('bills');
+        state.busyMsg = '';
         render();
       });
     });
@@ -4955,18 +5048,58 @@
 
   // ---------------- ADMIN ----------------
   function renderAdmin(){
-    var tabs = ['items','shop'];
+    var tabs = ['items','shop','history'];
     var tabBtns = tabs.map(function(t){
-      var label = t==='items'?'Items & Prices':'Shop & Bill Settings';
+      var label = t==='items'?'Items & Prices':(t==='shop'?'Shop & Bill Settings':'Deleted &amp; Returns History');
       return '<button class="nav-item" style="width:auto;display:inline-flex;'+(state.adminTab===t?'background:var(--green);color:#fff;':'background:var(--paper-dark);color:var(--ink);')+'border-radius:20px;padding:7px 14px;margin-right:8px;" data-atab="'+t+'">'+label+'</button>';
     }).join('');
 
     var body = '';
     if(state.adminTab==='items') body = renderAdminItems();
+    else if(state.adminTab==='history') body = renderAdminHistory();
     else body = renderAdminShop();
 
     return '<h1 class="page-title">Admin</h1><p class="page-sub">Fully customize items and bill details.</p>'+
       '<div style="margin-bottom:16px;">'+tabBtns+'</div>'+body;
+  }
+
+  // Read-only audit trail: bills deleted ("added in error") and every
+  // bill/stock return, newest first. Nothing here can be undone or edited —
+  // it's just a record so an admin can see what happened and who did it.
+  function renderAdminHistory(){
+    var delRows = (state.deletedBills||[]).slice().sort(function(a,b){ return new Date(b.dateISO)-new Date(a.dateISO); }).map(function(d){
+      var itemsSummary = (d.items||[]).map(function(it){ return escapeHtml(it.name)+' x'+it.qty; }).join(', ');
+      return '<div class="list-row">'+
+        '<div class="main">'+
+          '<div class="t1">'+escapeHtml(d.billNo||'—')+(d.customerName?' &middot; '+escapeHtml(d.customerName):'')+'</div>'+
+          '<div class="t2">Deleted '+new Date(d.dateISO).toLocaleString()+' by '+escapeHtml(d.deletedBy||'—')+'</div>'+
+          (itemsSummary ? '<div class="t2" style="margin-top:2px;">'+itemsSummary+'</div>' : '')+
+        '</div>'+
+        '<span class="mono" style="font-weight:700;">'+money(d.total)+'</span>'+
+      '</div>';
+    }).join('');
+
+    var retRows = (state.returns||[]).slice().sort(function(a,b){ return new Date(b.dateISO)-new Date(a.dateISO); }).map(function(r){
+      var itemsSummary = (r.items||[]).map(function(it){ return escapeHtml(it.name)+' x'+it.qty; }).join(', ');
+      return '<div class="list-row">'+
+        '<div class="main">'+
+          '<div class="t1">'+(r.type==='stock'?'Stock Return':'Bill Return')+(r.billNo?' &middot; '+escapeHtml(r.billNo):'')+(r.customerName?' &middot; '+escapeHtml(r.customerName):'')+'</div>'+
+          '<div class="t2">'+new Date(r.dateISO).toLocaleString()+' by '+escapeHtml(r.processedBy||'—')+(r.reason?' &middot; '+escapeHtml(r.reason):'')+'</div>'+
+          (itemsSummary ? '<div class="t2" style="margin-top:2px;">'+itemsSummary+'</div>' : '')+
+        '</div>'+
+        '<span class="mono" style="font-weight:700;">'+money(r.amount)+'</span>'+
+      '</div>';
+    }).join('');
+
+    return ''+
+      '<div class="card" style="margin-bottom:14px;">'+
+        '<div class="section-head"><h3>Deleted Bills ('+(state.deletedBills||[]).length+')</h3></div>'+
+        (delRows || '<div class="empty-note">No bills have been deleted.</div>')+
+      '</div>'+
+      '<div class="card">'+
+        '<div class="section-head"><h3>Returns ('+(state.returns||[]).length+')</h3></div>'+
+        (retRows || '<div class="empty-note">No returns recorded yet.</div>')+
+      '</div>';
   }
 
   function renderAdminItems(){
