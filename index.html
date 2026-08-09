@@ -573,6 +573,7 @@
     reportPayment:'all',
     reportSelectedDate: todayISO(),
     expandedDay:null,
+    cashSummaryCollapsed:false,
     monthlyRepMode:'month',
     monthlyRepMonth: todayISO().slice(0,7),
     monthlyRepFrom:'',
@@ -593,7 +594,8 @@
     profitPinInput:'',
     profitPinErr:'',
     profitPinChangeMsg:null,
-    billFindQuery:''
+    billFindQuery:'',
+    pendingCreditExpandedCust: null
   };
 
   // Debounce helper: full-page re-render on every keystroke is what makes
@@ -4110,37 +4112,117 @@
     }).join('');
     var lowCount = state.items.filter(function(i){ return i.stock<=5; }).length;
 
-    var formHtml = '';
+    // Restock modal popup
+    var restockModalHtml = '';
     var rf = state.restockForm;
     if(rf){
       var item = state.items.find(function(i){ return i.id===rf.itemId; });
       if(item){
-        formHtml = '<div class="card" style="margin-top:14px;">'+
-          '<div class="section-head"><h3>Restock: '+escapeHtml(item.name)+'</h3></div>'+
-          '<div class="form-row">'+
-            '<div class="field"><label>Quantity to add</label><input id="rs-qty" type="number" min="1" inputmode="numeric" value="'+rf.qty+'"></div>'+
-            '<div class="field"><label>Purchase price / unit ('+state.shop.currency+')</label><input id="rs-price" type="number" min="0" step="0.01" inputmode="decimal" value="'+rf.purchasePrice+'"></div>'+
-          '</div>'+
-          '<div class="note-box">Selling price stays '+money(item.price)+' for every unit of this item. This purchase price only applies to this new batch of stock — stock already on the shelf keeps whatever it originally cost.</div>'+
-          '<div style="display:flex;gap:8px;"><button class="btn btn-primary" id="rs-save">Add stock</button><button class="btn btn-ghost" id="rs-cancel">Cancel</button></div>'+
-        '</div>';
+        var lastCostVal = rf.purchasePrice;
+        var margin = lastCostVal>0 ? Math.round(((item.price-lastCostVal)/item.price)*100) : null;
+        restockModalHtml =
+          '<div class="modal-bg" id="restock-modal-bg">'+
+            '<div class="modal-box" style="max-width:400px;">'+
+              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">'+
+                '<div>'+
+                  '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);font-weight:600;margin-bottom:2px;">Restock Item</div>'+
+                  '<div style="font-size:19px;font-weight:800;color:var(--ink);">'+escapeHtml(item.name)+'</div>'+
+                  (item.category ? '<div style="font-size:12px;color:var(--text-dim);">'+escapeHtml(item.category)+'</div>' : '')+
+                '</div>'+
+                '<button id="rs-cancel" style="background:var(--paper-dark);border:none;border-radius:50%;width:34px;height:34px;font-size:18px;line-height:1;cursor:pointer;color:var(--text-dim);" title="Close">&times;</button>'+
+              '</div>'+
+
+              '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;background:var(--paper);border-radius:var(--radius-sm);padding:12px;margin-bottom:18px;">'+
+                '<div style="text-align:center;">'+
+                  '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);margin-bottom:2px;">Current Stock</div>'+
+                  '<div style="font-size:22px;font-weight:800;color:var(--ink);">'+item.stock+'</div>'+
+                '</div>'+
+                '<div style="text-align:center;">'+
+                  '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);margin-bottom:2px;">Selling Price</div>'+
+                  '<div style="font-size:22px;font-weight:800;color:var(--green);">'+money(item.price)+'</div>'+
+                '</div>'+
+              '</div>'+
+
+              '<div class="field">'+
+                '<label style="font-size:13px;font-weight:700;color:var(--ink);">&#128230; Quantity to Add</label>'+
+                '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;">'+
+                  '<button id="rs-qty-dec" style="width:40px;height:48px;border:1.5px solid var(--line);border-radius:var(--radius-sm);background:var(--paper);font-size:22px;font-weight:700;cursor:pointer;flex-shrink:0;color:var(--ink);">−</button>'+
+                  '<input id="rs-qty" type="number" min="1" inputmode="numeric" value="'+rf.qty+'" style="flex:1;text-align:center;font-size:24px;font-weight:800;font-family:inherit;height:48px;border:1.5px solid var(--green);border-radius:var(--radius-sm);color:var(--ink);background:var(--white);">'+
+                  '<button id="rs-qty-inc" style="width:40px;height:48px;border:1.5px solid var(--line);border-radius:var(--radius-sm);background:var(--paper);font-size:22px;font-weight:700;cursor:pointer;flex-shrink:0;color:var(--ink);">+</button>'+
+                '</div>'+
+                '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">'+
+                  [5,10,20,50,100].map(function(q){ return '<button class="btn btn-ghost btn-sm rs-qty-preset" data-preset-qty="'+q+'" style="flex:1;min-width:40px;">'+q+'</button>'; }).join('')+
+                '</div>'+
+              '</div>'+
+
+              '<div class="field" style="margin-top:14px;">'+
+                '<label style="font-size:13px;font-weight:700;color:var(--ink);">&#128176; Purchase Price / Unit ('+state.shop.currency+')</label>'+
+                '<input id="rs-price" type="number" min="0" step="0.01" inputmode="decimal" value="'+rf.purchasePrice+'" placeholder="0.00" style="margin-top:4px;font-size:18px;font-weight:700;font-family:inherit;height:48px;text-align:center;border:1.5px solid var(--line);border-radius:var(--radius-sm);width:100%;color:var(--ink);background:var(--white);">'+
+                (margin!==null ? '<div id="rs-margin-label" style="font-size:12px;color:var(--text-dim);margin-top:5px;text-align:center;">Margin: <b style="color:var(--green);">'+margin+'%</b> &nbsp;|&nbsp; Profit/unit: <b>'+money(item.price-lastCostVal)+'</b></div>' : '<div id="rs-margin-label" style="font-size:12px;color:var(--text-dim);margin-top:5px;text-align:center;">Enter purchase price to see margin</div>')+
+              '</div>'+
+
+              '<div id="rs-preview-box" style="margin-top:14px;background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(37,99,235,.03));border:1.5px solid var(--green);border-radius:var(--radius-sm);padding:12px;">'+
+                '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--green);font-weight:700;margin-bottom:8px;">After Restock</div>'+
+                '<div style="display:flex;justify-content:space-between;align-items:center;">'+
+                  '<span style="font-size:13px;color:var(--text-dim);">New stock total</span>'+
+                  '<span id="rs-new-stock" style="font-size:20px;font-weight:800;color:var(--ink);">'+(item.stock+rf.qty)+'</span>'+
+                '</div>'+
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">'+
+                  '<span style="font-size:13px;color:var(--text-dim);">Total purchase cost</span>'+
+                  '<span id="rs-total-cost" style="font-size:16px;font-weight:700;color:var(--amber);">'+money(rf.qty*rf.purchasePrice)+'</span>'+
+                '</div>'+
+              '</div>'+
+
+              '<div class="note-box" style="margin-top:12px;font-size:12px;">Selling price stays <b>'+money(item.price)+'</b> per unit. Purchase price applies to this batch only.</div>'+
+
+              '<div style="display:flex;gap:10px;margin-top:16px;">'+
+                '<button class="btn btn-ghost" id="rs-cancel2" style="flex:1;">Cancel</button>'+
+                '<button class="btn btn-primary" id="rs-save" style="flex:2;font-size:15px;">&#10003; Add Stock</button>'+
+              '</div>'+
+            '</div>'+
+          '</div>';
       }
     }
 
-    var stockReturnFormHtml = '';
+    // Stock Return modal popup
+    var stockReturnModalHtml = '';
     var srf = state.stockReturnForm;
     if(srf){
       var sitem = state.items.find(function(i){ return i.id===srf.itemId; });
       if(sitem){
-        stockReturnFormHtml = '<div class="card" style="margin-top:14px;background:var(--paper);">'+
-          '<div class="section-head"><h3>Return Stock: '+escapeHtml(sitem.name)+'</h3></div>'+
-          '<div class="note-box">Use this to take stock back off the shelf — damaged, expired, or sent back to a supplier. This is not tied to any customer bill.</div>'+
-          '<div class="form-row">'+
-            '<div class="field"><label>Quantity to remove (currently '+sitem.stock+' in stock)</label><input id="sr-qty" type="number" min="1" max="'+sitem.stock+'" inputmode="numeric" value="'+srf.qty+'"></div>'+
-          '</div>'+
-          '<div class="field"><label>Reason (optional)</label><input id="sr-reason" placeholder="e.g. damaged, expired, sent back to supplier" value="'+escapeHtml(srf.reason||'')+'"></div>'+
-          '<div style="display:flex;gap:8px;"><button class="btn btn-primary" id="sr-save">Confirm Stock Return</button><button class="btn btn-ghost" id="sr-cancel">Cancel</button></div>'+
-        '</div>';
+        stockReturnModalHtml =
+          '<div class="modal-bg" id="stock-return-modal-bg">'+
+            '<div class="modal-box" style="max-width:380px;">'+
+              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">'+
+                '<div>'+
+                  '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--red);font-weight:600;margin-bottom:2px;">Remove Stock</div>'+
+                  '<div style="font-size:19px;font-weight:800;color:var(--ink);">'+escapeHtml(sitem.name)+'</div>'+
+                '</div>'+
+                '<button id="sr-cancel" style="background:var(--paper-dark);border:none;border-radius:50%;width:34px;height:34px;font-size:18px;line-height:1;cursor:pointer;color:var(--text-dim);" title="Close">&times;</button>'+
+              '</div>'+
+              '<div style="text-align:center;background:var(--paper);border-radius:var(--radius-sm);padding:12px;margin-bottom:18px;">'+
+                '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);margin-bottom:2px;">Current Stock</div>'+
+                '<div style="font-size:26px;font-weight:800;color:var(--ink);">'+sitem.stock+'</div>'+
+              '</div>'+
+              '<div class="note-box" style="margin-bottom:14px;">Use this to remove stock — damaged, expired, or returned to supplier. Not tied to any customer bill.</div>'+
+              '<div class="field">'+
+                '<label style="font-size:13px;font-weight:700;color:var(--ink);">Quantity to Remove</label>'+
+                '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;">'+
+                  '<button id="sr-qty-dec" style="width:40px;height:48px;border:1.5px solid var(--line);border-radius:var(--radius-sm);background:var(--paper);font-size:22px;font-weight:700;cursor:pointer;flex-shrink:0;color:var(--ink);">−</button>'+
+                  '<input id="sr-qty" type="number" min="1" max="'+sitem.stock+'" inputmode="numeric" value="'+srf.qty+'" style="flex:1;text-align:center;font-size:24px;font-weight:800;font-family:inherit;height:48px;border:1.5px solid var(--red);border-radius:var(--radius-sm);color:var(--ink);background:var(--white);">'+
+                  '<button id="sr-qty-inc" style="width:40px;height:48px;border:1.5px solid var(--line);border-radius:var(--radius-sm);background:var(--paper);font-size:22px;font-weight:700;cursor:pointer;flex-shrink:0;color:var(--ink);">+</button>'+
+                '</div>'+
+              '</div>'+
+              '<div class="field" style="margin-top:14px;">'+
+                '<label style="font-size:13px;font-weight:700;color:var(--ink);">Reason (optional)</label>'+
+                '<input id="sr-reason" placeholder="e.g. damaged, expired, returned to supplier" value="'+escapeHtml(srf.reason||'')+'" style="margin-top:4px;width:100%;height:44px;border:1.5px solid var(--line);border-radius:var(--radius-sm);font-family:inherit;font-size:14px;padding:0 12px;">'+
+              '</div>'+
+              '<div style="display:flex;gap:10px;margin-top:20px;">'+
+                '<button class="btn btn-ghost" id="sr-cancel2" style="flex:1;">Cancel</button>'+
+                '<button class="btn btn-danger" id="sr-save" style="flex:2;font-size:15px;">Remove Stock</button>'+
+              '</div>'+
+            '</div>'+
+          '</div>';
       }
     }
 
@@ -4162,8 +4244,8 @@
       openCloseHtml+
     '</div>'+
     '<div class="card"><table><thead><tr><th>Item</th><th>Category</th><th>Selling Price</th><th>Last Purchase Price</th><th>Stock</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-    formHtml+
-    stockReturnFormHtml;
+    restockModalHtml+
+    stockReturnModalHtml;
   }
 
   function bindStockEvents(){
@@ -4188,6 +4270,7 @@
         render();
       });
     });
+    // ---- Restock modal bindings ----
     var rsSave = document.getElementById('rs-save');
     if(rsSave) rsSave.addEventListener('click', async function(){
       var rf = state.restockForm;
@@ -4198,8 +4281,6 @@
       var price = parseFloat(document.getElementById('rs-price').value)||0;
       if(qty<=0){ alert('Enter a valid quantity to add.'); return; }
       ensureItemBatches(item);
-      // Pushed as a brand-new batch — every earlier batch (and its
-      // purchase price) is left exactly as it was.
       item.batches.push({id:uid('b'), qty:qty, purchasePrice:price, dateISO:new Date().toISOString()});
       item.stock += qty;
       item.purchasePrice = price;
@@ -4210,9 +4291,58 @@
       state.busyMsg = '';
       render();
     });
+    function closeRestockModal(){ state.restockForm=null; render(); }
     var rsCancel = document.getElementById('rs-cancel');
-    if(rsCancel) rsCancel.addEventListener('click', function(){ state.restockForm=null; render(); });
+    if(rsCancel) rsCancel.addEventListener('click', closeRestockModal);
+    var rsCancel2 = document.getElementById('rs-cancel2');
+    if(rsCancel2) rsCancel2.addEventListener('click', closeRestockModal);
+    var rsBg = document.getElementById('restock-modal-bg');
+    if(rsBg) rsBg.addEventListener('click', function(e){ if(e.target===rsBg) closeRestockModal(); });
 
+    // Qty stepper buttons
+    var rsQtyInp = document.getElementById('rs-qty');
+    var rsQtyDec = document.getElementById('rs-qty-dec');
+    var rsQtyInc = document.getElementById('rs-qty-inc');
+    function updateRestockPreview(){
+      if(!rsQtyInp) return;
+      var q = Math.max(1, parseInt(rsQtyInp.value,10)||1);
+      var rf = state.restockForm;
+      if(!rf) return;
+      var item = state.items.find(function(i){ return i.id===rf.itemId; });
+      if(!item) return;
+      var price = parseFloat(document.getElementById('rs-price').value)||0;
+      var newStock = document.getElementById('rs-new-stock');
+      var totalCost = document.getElementById('rs-total-cost');
+      var marginLabel = document.getElementById('rs-margin-label');
+      if(newStock) newStock.textContent = item.stock + q;
+      if(totalCost) totalCost.textContent = money(q * price);
+      if(marginLabel){
+        if(price>0 && item.price>0){
+          var m = Math.round(((item.price-price)/item.price)*100);
+          marginLabel.innerHTML = 'Margin: <b style="color:var(--green);">'+m+'%</b> &nbsp;|&nbsp; Profit/unit: <b>'+money(item.price-price)+'</b>';
+        } else {
+          marginLabel.textContent = 'Enter purchase price to see margin';
+        }
+      }
+    }
+    if(rsQtyDec) rsQtyDec.addEventListener('click', function(){
+      var v = Math.max(1,(parseInt(rsQtyInp.value,10)||1)-1);
+      rsQtyInp.value=v; updateRestockPreview();
+    });
+    if(rsQtyInc) rsQtyInc.addEventListener('click', function(){
+      rsQtyInp.value=(parseInt(rsQtyInp.value,10)||1)+1; updateRestockPreview();
+    });
+    if(rsQtyInp) rsQtyInp.addEventListener('input', updateRestockPreview);
+    document.querySelectorAll('.rs-qty-preset').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        if(rsQtyInp) rsQtyInp.value = btn.getAttribute('data-preset-qty');
+        updateRestockPreview();
+      });
+    });
+    var rsPriceInp = document.getElementById('rs-price');
+    if(rsPriceInp) rsPriceInp.addEventListener('input', updateRestockPreview);
+
+    // ---- Stock Return modal bindings ----
     document.querySelectorAll('[data-stock-return]').forEach(function(btn){
       btn.addEventListener('click', function(){
         var id = btn.getAttribute('data-stock-return');
@@ -4235,8 +4365,6 @@
       if(qty<=0){ alert('Enter a valid quantity to remove.'); return; }
       if(qty>item.stock){ alert('Only '+item.stock+' in stock — cannot remove more than that.'); return; }
       if(!confirm('Remove '+qty+' unit(s) of '+item.name+' from stock? This cannot be undone.')) return;
-      // Reuses the same FIFO batch consumption as a sale, so purchase-price
-      // batches (and therefore profit reporting) stay accurate.
       var cost = consumeStockFIFO(item, qty);
       state.returns = state.returns || [];
       state.returns.push({
@@ -4250,8 +4378,28 @@
       await Promise.all([persist('items'), persist('returns')]);
       render();
     });
+    function closeStockReturnModal(){ state.stockReturnForm=null; render(); }
     var srCancel = document.getElementById('sr-cancel');
-    if(srCancel) srCancel.addEventListener('click', function(){ state.stockReturnForm=null; render(); });
+    if(srCancel) srCancel.addEventListener('click', closeStockReturnModal);
+    var srCancel2 = document.getElementById('sr-cancel2');
+    if(srCancel2) srCancel2.addEventListener('click', closeStockReturnModal);
+    var srBg = document.getElementById('stock-return-modal-bg');
+    if(srBg) srBg.addEventListener('click', function(e){ if(e.target===srBg) closeStockReturnModal(); });
+
+    // Stock return qty steppers
+    var srQtyInp = document.getElementById('sr-qty');
+    var srQtyDec = document.getElementById('sr-qty-dec');
+    var srQtyInc = document.getElementById('sr-qty-inc');
+    if(srQtyDec) srQtyDec.addEventListener('click', function(){
+      var v = Math.max(1,(parseInt(srQtyInp.value,10)||1)-1);
+      srQtyInp.value=v;
+    });
+    if(srQtyInc) srQtyInc.addEventListener('click', function(){
+      var srf2 = state.stockReturnForm;
+      var sitem2 = srf2 ? state.items.find(function(i){ return i.id===srf2.itemId; }) : null;
+      var max = sitem2 ? sitem2.stock : 9999;
+      srQtyInp.value = Math.min(max, (parseInt(srQtyInp.value,10)||1)+1);
+    });
   }
 
   // ---------------- REPORTS ----------------
@@ -4367,6 +4515,109 @@
       '<button class="btn btn-ghost btn-sm" data-view-bill="'+b.id+'">View as photo</button>'+
       '<button class="btn btn-ghost btn-sm" data-share-bill="'+b.id+'">Share as photo</button>'+
       deleteBillButtonHtml(b)+
+    '</div>';
+  }
+
+  // ---- PENDING CREDIT BILLS (All-time outstanding account bills) ----
+  function pendingCreditBillsCardHtml(){
+    // All account bills with a remaining balance > 0
+    var pendingBills = state.bills.filter(function(b){
+      return b.payment==='account' && billBalance(b) > 0.004;
+    }).slice().sort(function(a,b){ return new Date(a.dateISO)-new Date(b.dateISO); }); // oldest first
+
+    var totalPending = pendingBills.reduce(function(s,b){ return s+billBalance(b); },0);
+    var totalPendingBillCount = pendingBills.length;
+
+    // Group by customer
+    var custMap = {};
+    pendingBills.forEach(function(b){
+      var key = (b.customerName||'(No Name)').toLowerCase();
+      if(!custMap[key]) custMap[key] = {
+        name: b.customerName||'(No Name)',
+        phone: b.customerPhone||'',
+        bills: [],
+        totalOwed: 0
+      };
+      custMap[key].bills.push(b);
+      custMap[key].totalOwed += billBalance(b);
+      if(!custMap[key].phone && b.customerPhone) custMap[key].phone = b.customerPhone;
+    });
+    var custList = Object.keys(custMap).map(function(k){ return custMap[k]; })
+      .sort(function(a,b){ return b.totalOwed - a.totalOwed; }); // highest owed first
+
+    if(!custList.length){
+      return '<div class="card" style="margin-bottom:18px;border:1.5px solid var(--green);background:linear-gradient(180deg,rgba(37,99,235,.05),rgba(37,99,235,0) 40%);">'+
+        '<div class="section-head"><h3 style="color:var(--green);">&#10003; Pending Credit Bills &mdash; All Outstanding</h3></div>'+
+        '<div class="empty-note" style="color:var(--green);font-weight:600;">&#127881; No pending credit balances &mdash; all account bills are fully settled!</div>'+
+      '</div>';
+    }
+
+    var custRowsHtml = custList.map(function(c){
+      var custKey = 'pend-cust-'+c.name.toLowerCase().replace(/\s+/g,'_');
+      var isOpen = state.pendingCreditExpandedCust === custKey;
+      var billRowsHtml = c.bills.map(function(b){
+        var bal = billBalance(b);
+        var paid = billPaidTotal(b);
+        var age = Math.floor((Date.now()-new Date(b.dateISO))/86400000);
+        var ageLabel = age===0 ? 'Today' : age===1 ? '1 day ago' : age+' days ago';
+        var ageColor = age>30 ? 'color:var(--red);font-weight:700;' : age>7 ? 'color:var(--amber);' : 'color:var(--text-dim);';
+        return '<tr>'+
+          '<td><b>'+escapeHtml(b.no)+'</b></td>'+
+          '<td>'+new Date(b.dateISO).toLocaleDateString()+'<br><span style="font-size:10.5px;'+ageColor+'">'+ageLabel+'</span></td>'+
+          '<td class="num">'+money(b.total)+'</td>'+
+          '<td class="num" style="color:var(--green);">'+money(paid)+'</td>'+
+          '<td class="num" style="color:var(--red);font-weight:700;">'+money(bal)+'</td>'+
+          '<td>'+billActionButtonsHtml(b)+'</td>'+
+        '</tr>';
+      }).join('');
+
+      return '<div class="card" style="margin-bottom:10px;border-left:4px solid var(--red);">'+
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-bottom:8px;border-bottom:1px dashed var(--line);">'+
+          '<div>'+
+            '<div style="font-weight:800;font-size:15px;color:var(--ink);">'+escapeHtml(c.name)+'</div>'+
+            (c.phone ? '<div style="font-size:12px;color:var(--text-dim);">&#128222; '+escapeHtml(c.phone)+'</div>' : '')+
+            '<div style="font-size:12px;color:var(--text-dim);">'+c.bills.length+' pending bill'+(c.bills.length>1?'s':'')+'</div>'+
+          '</div>'+
+          '<div style="text-align:right;">'+
+            '<div style="font-size:12px;color:var(--text-dim);">Total Owed</div>'+
+            '<div style="font-size:20px;font-weight:800;color:var(--red);">'+money(c.totalOwed)+'</div>'+
+          '</div>'+
+        '</div>'+
+        '<div class="acct-row-actions" style="margin-top:8px;">'+
+          '<button class="btn btn-ghost btn-sm" data-toggle-pending-cust="'+custKey+'">'+(isOpen?'&#9650; Hide bills':'&#9660; View bills ('+c.bills.length+')')+'</button>'+
+          (c.phone ? '<a class="btn btn-amber btn-sm" href="tel:'+escapeHtml(c.phone)+'" style="text-decoration:none;display:inline-flex;align-items:center;">&#128222; Call</a>' : '')+
+          (printingEnabled() ? '<button class="btn btn-ghost btn-sm" data-print-statement="'+c.name.toLowerCase()+'">Print Statement</button>' : '')+
+          '<button class="btn btn-ghost btn-sm" data-share-statement="'+c.name.toLowerCase()+'">Share Statement</button>'+
+        '</div>'+
+        (isOpen ?
+          '<div style="margin-top:10px;overflow-x:auto;">'+
+            '<table><thead><tr>'+
+              '<th>Bill #</th><th>Date</th><th>Bill Total</th><th>Paid</th><th>Balance Due</th><th>Actions</th>'+
+            '</tr></thead><tbody>'+billRowsHtml+'</tbody></table>'+
+          '</div>'
+        : '')+
+      '</div>';
+    }).join('');
+
+    return '<div class="card" style="margin-bottom:18px;border:1.5px solid var(--red);background:linear-gradient(180deg,rgba(220,61,61,.06),rgba(220,61,61,0) 40%);box-shadow:0 2px 10px rgba(220,61,61,.12);">'+
+      '<div class="section-head">'+
+        '<h3 style="font-size:17px;font-weight:800;color:var(--red);">&#9888; Pending Credit Bills &mdash; All Outstanding</h3>'+
+      '</div>'+
+      '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;">'+
+        '<div style="background:var(--white);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px 16px;flex:1;min-width:120px;text-align:center;">'+
+          '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px;">Pending Bills</div>'+
+          '<div style="font-size:22px;font-weight:800;color:var(--ink);">'+totalPendingBillCount+'</div>'+
+        '</div>'+
+        '<div style="background:var(--white);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px 16px;flex:1;min-width:120px;text-align:center;">'+
+          '<div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px;">Customers with Balance</div>'+
+          '<div style="font-size:22px;font-weight:800;color:var(--ink);">'+custList.length+'</div>'+
+        '</div>'+
+        '<div style="background:rgba(220,61,61,.08);border:1.5px solid var(--red);border-radius:var(--radius-sm);padding:10px 16px;flex:2;min-width:160px;text-align:center;">'+
+          '<div style="font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px;font-weight:700;">Total Outstanding</div>'+
+          '<div style="font-size:26px;font-weight:800;color:var(--red);">'+money(totalPending)+'</div>'+
+        '</div>'+
+      '</div>'+
+      custRowsHtml+
     '</div>';
   }
 
@@ -4527,9 +4778,13 @@
     '</div>'+
 
     '<div class="card cash-highlight" style="margin-bottom:18px;">'+
-      '<div class="section-head"><h3>&#128176; Cash on Hand &mdash; Daily Summary</h3></div>'+
-      '<div class="note-box">Cash on hand = cash sales + payments received against account balances, per day. Assumes account payments were collected in cash — see the Bills page to record those payments.</div>'+
-      cashDaysHtml+
+      '<div class="section-head"><h3>&#128176; Cash on Hand &mdash; Daily Summary</h3>'+
+        '<button class="btn btn-ghost btn-sm" id="cash-summary-toggle" type="button">'+(state.cashSummaryCollapsed?'Show &#9662;':'Hide &#9652;')+'</button>'+
+      '</div>'+
+      (state.cashSummaryCollapsed ? '' :
+        '<div class="note-box">Cash on hand = cash sales + payments received against account balances, per day. Assumes account payments were collected in cash — see the Bills page to record those payments.</div>'+
+        cashDaysHtml
+      )+
     '</div>'+
 
     '<div class="card highlight-amber" style="margin-bottom:18px;"><div class="section-head"><h3>&#128202; Sales by day ('+selDateLabel+')'+(state.reportPayment!=='all'?' &middot; '+state.reportPayment:'')+'</h3></div>'+
@@ -4538,6 +4793,8 @@
 
     '<div class="card highlight-ink" style="margin-bottom:18px;"><div class="section-head"><h3>&#128179; Cheque payments &mdash; detail ('+selDateLabel+')</h3></div>'+chequeDetailHtml+'</div>'+
     '<div class="card highlight-red" style="margin-bottom:18px;"><div class="section-head"><h3>&#128100; Account (credit) sales &mdash; by customer ('+selDateLabel+')</h3></div>'+accountDetailHtml+'</div>'+
+
+    pendingCreditBillsCardHtml()+
 
     '<div class="card" style="margin-bottom:18px;">'+
       '<div class="section-head"><h3>&#128196; Sales Report &mdash; PDF</h3></div>'+
@@ -4585,6 +4842,11 @@
   }
 
   function bindReportsEvents(){
+    var cashSummaryToggle = document.getElementById('cash-summary-toggle');
+    if(cashSummaryToggle) cashSummaryToggle.addEventListener('click', function(){
+      state.cashSummaryCollapsed = !state.cashSummaryCollapsed;
+      render();
+    });
     var repSelDate = document.getElementById('rep-sel-date');
     if(repSelDate) repSelDate.addEventListener('change', function(e){
       state.reportSelectedDate = e.target.value || todayISO();
@@ -4626,6 +4888,15 @@
       btn.addEventListener('click', function(){
         setReportPreset(btn.getAttribute('data-preset'));
         state.expandedDay = null;
+        render();
+      });
+    });
+
+    // Pending credit bills — expand/collapse per customer
+    document.querySelectorAll('[data-toggle-pending-cust]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var key = btn.getAttribute('data-toggle-pending-cust');
+        state.pendingCreditExpandedCust = (state.pendingCreditExpandedCust===key) ? null : key;
         render();
       });
     });
@@ -5118,34 +5389,51 @@
     if(form){
       var isEdit = !!form.id;
       var editingLastCost = isEdit ? itemLastPurchasePrice(state.items.find(function(i){ return i.id===form.id; }) || form) : null;
-      formHtml = '<div class="card" style="margin-top:14px;">'+
-        '<div class="section-head"><h3>'+(isEdit?'Edit item':'Add new item')+'</h3></div>'+
-        '<div class="form-row">'+
-          '<div class="field"><label>Name</label><input id="f-name" value="'+escapeHtml(form.name)+'"></div>'+
-          '<div class="field"><label>Category</label><input id="f-cat" value="'+escapeHtml(form.category)+'"></div>'+
-        '</div>'+
-        '<div class="form-row">'+
-          '<div class="field"><label>Selling price ('+state.shop.currency+')</label><input id="f-price" type="number" min="0" inputmode="decimal" value="'+form.price+'"></div>'+
+      formHtml = '<div class="modal-bg" id="item-modal-bg">'+
+        '<div class="modal-box" style="max-width:440px;">'+
+          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">'+
+            '<div>'+
+              '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);font-weight:600;margin-bottom:2px;">'+(isEdit?'Edit Item':'New Item')+'</div>'+
+              '<div style="font-size:19px;font-weight:800;color:var(--ink);">'+(isEdit?escapeHtml(form.name||'Item'):'Add new item')+'</div>'+
+            '</div>'+
+            '<button id="f-close" style="background:var(--paper-dark);border:none;border-radius:50%;width:34px;height:34px;font-size:18px;line-height:1;cursor:pointer;color:var(--text-dim);" title="Close">&times;</button>'+
+          '</div>'+
+          '<div class="field">'+
+            '<label>Item photo (optional)</label>'+
+            '<div style="display:flex;gap:12px;align-items:center;">'+
+              (form.image ?
+                '<img class="logo-preview" src="'+form.image+'" style="width:64px;height:64px;object-fit:cover;border-radius:var(--radius-sm);margin:0;">'
+                :
+                '<div style="width:64px;height:64px;border-radius:var(--radius-sm);background:var(--paper-dark);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:var(--text-dim);flex-shrink:0;">'+escapeHtml((form.name||'?').charAt(0).toUpperCase())+'</div>'
+              )+
+              '<div style="display:flex;flex-direction:column;gap:6px;">'+
+                '<input type="file" accept="image/*" id="f-image">'+
+                (form.image ? '<button class="btn btn-ghost btn-sm" id="f-image-remove" type="button" style="width:fit-content;">Remove photo</button>' : '')+
+              '</div>'+
+            '</div>'+
+          '</div>'+
+          '<div class="form-row">'+
+            '<div class="field"><label>Name</label><input id="f-name" value="'+escapeHtml(form.name)+'" placeholder="e.g. Coca-Cola 500ml"></div>'+
+            '<div class="field"><label>Category</label><input id="f-cat" value="'+escapeHtml(form.category)+'" placeholder="e.g. Beverages"></div>'+
+          '</div>'+
+          '<div class="form-row">'+
+            '<div class="field"><label>Selling price ('+state.shop.currency+')</label><input id="f-price" type="number" min="0" inputmode="decimal" value="'+form.price+'"></div>'+
+            (isEdit ?
+              '<div class="field"><label>Stock</label><input value="'+form.stock+' units" disabled style="background:var(--paper-dark);color:var(--text-dim);"></div>'
+              :
+              '<div class="field"><label>Initial stock qty</label><input id="f-stock" type="number" min="0" inputmode="numeric" value="'+form.stock+'"></div>'
+            )+
+          '</div>'+
           (isEdit ?
-            '<div class="field"><label>Stock</label><input value="'+form.stock+' units" disabled style="background:var(--paper-dark);color:var(--text-dim);"></div>'
+            '<div class="note-box">Last purchase price: '+(editingLastCost!=null?money(editingLastCost):'—')+'. Selling price above applies to all stock of this item. To add more stock (and record what it cost), use +Restock on the Stock page — earlier stock keeps its original purchase price.</div>'
             :
-            '<div class="field"><label>Initial stock qty</label><input id="f-stock" type="number" min="0" inputmode="numeric" value="'+form.stock+'"></div>'
+            '<div class="form-row"><div class="field"><label>Purchase price / unit ('+state.shop.currency+')</label><input id="f-purchase-price" type="number" min="0" step="0.01" inputmode="decimal" value="'+(form.purchasePrice||0)+'"></div></div>'
           )+
-        '</div>'+
-        (isEdit ?
-          '<div class="note-box">Last purchase price: '+(editingLastCost!=null?money(editingLastCost):'—')+'. Selling price above applies to all stock of this item. To add more stock (and record what it cost), use +Restock on the Stock page — earlier stock keeps its original purchase price.</div>'
-          :
-          '<div class="form-row"><div class="field"><label>Purchase price / unit ('+state.shop.currency+')</label><input id="f-purchase-price" type="number" min="0" step="0.01" inputmode="decimal" value="'+(form.purchasePrice||0)+'"></div></div>'
-        )+
-        '<div class="field">'+
-          '<label>Item photo (optional)</label>'+
-          (form.image ? '<img class="logo-preview" src="'+form.image+'">' : '')+
-          '<div style="display:flex;gap:8px;align-items:center;">'+
-            '<input type="file" accept="image/*" id="f-image">'+
-            (form.image ? '<button class="btn btn-ghost btn-sm" id="f-image-remove" type="button">Remove photo</button>' : '')+
+          '<div style="display:flex;gap:10px;margin-top:16px;">'+
+            '<button class="btn btn-ghost" id="f-cancel" style="flex:1;">Cancel</button>'+
+            '<button class="btn btn-primary" id="f-save" style="flex:2;font-size:15px;">&#10003; Save item</button>'+
           '</div>'+
         '</div>'+
-        '<div style="display:flex;gap:8px;"><button class="btn btn-primary" id="f-save">Save item</button><button class="btn btn-ghost" id="f-cancel">Cancel</button></div>'+
       '</div>';
     }
 
@@ -5329,8 +5617,13 @@
       state.itemForm = null;
       render();
     });
+    function closeItemModal(){ state.itemForm=null; render(); }
     var fCancel = document.getElementById('f-cancel');
-    if(fCancel) fCancel.addEventListener('click', function(){ state.itemForm=null; render(); });
+    if(fCancel) fCancel.addEventListener('click', closeItemModal);
+    var fClose = document.getElementById('f-close');
+    if(fClose) fClose.addEventListener('click', closeItemModal);
+    var itemModalBg = document.getElementById('item-modal-bg');
+    if(itemModalBg) itemModalBg.addEventListener('click', function(e){ if(e.target===itemModalBg) closeItemModal(); });
 
     function captureItemFormFields(){
       state.itemForm.name = document.getElementById('f-name').value;
