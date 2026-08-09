@@ -486,6 +486,31 @@
     .bottom-tabs button{font-size:8.8px;}
     .stat-grid{grid-template-columns:1fr 1fr;}
   }
+  /* ---------- STOCK PAGE: stacked cards on phone ---------- */
+  @media (max-width:640px){
+    table.stock-table thead{display:none;}
+    table.stock-table, table.stock-table tbody, table.stock-table tr, table.stock-table td{
+      display:block; width:100%;
+    }
+    table.stock-table tr{
+      border:1px solid var(--line); border-radius:var(--radius-sm);
+      padding:10px 12px; margin-bottom:10px; background:var(--white);
+    }
+    table.stock-table tr:last-child{margin-bottom:0;}
+    table.stock-table td{
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+      border-bottom:1px dashed var(--line); padding:7px 0; text-align:right;
+    }
+    table.stock-table td:last-child{border-bottom:none;}
+    table.stock-table td::before{
+      content:attr(data-label); font-size:11px; font-weight:700; text-transform:uppercase;
+      letter-spacing:.04em; color:var(--text-dim); text-align:left; flex-shrink:0;
+    }
+    table.stock-table td.stock-actions{justify-content:flex-start;}
+    table.stock-table td.stock-actions::before{display:none;}
+    table.stock-table td.stock-actions{flex-wrap:wrap; padding-top:9px;}
+    table.stock-table td.stock-actions .btn{flex:1; min-width:100px;}
+  }
   @media (hover:none) and (pointer:coarse){
     .item-tile:not(:disabled):hover,.stat-card:hover,.nav-item:hover,.btn-primary:hover,.btn-amber:hover{
       box-shadow:var(--shadow-sm);transform:none;filter:none;
@@ -4090,22 +4115,22 @@
     var stockSelDate = state.stockSelectedDate || todayISO();
     var stockSelDateLabel = new Date(stockSelDate+'T00:00:00').toLocaleDateString(undefined,{weekday:'short', year:'numeric', month:'short', day:'numeric'});
     var openCloseRows = stockOpenCloseByDate(stockSelDate);
-    var openCloseHtml = openCloseRows.length ? '<table><thead><tr><th>Item</th><th>Category</th><th>Opening Stock</th><th>In</th><th>Out</th><th>Closing Stock</th></tr></thead><tbody>'+
+    var openCloseHtml = openCloseRows.length ? '<table class="stock-table"><thead><tr><th>Item</th><th>Category</th><th>Opening Stock</th><th>In</th><th>Out</th><th>Closing Stock</th></tr></thead><tbody>'+
       openCloseRows.map(function(r){
-        return '<tr><td>'+escapeHtml(r.name)+'</td><td>'+escapeHtml(r.category)+'</td>'+
-          '<td class="num">'+r.opening+'</td>'+
-          '<td class="num" style="color:var(--green);">'+(r.inQty>0?'+'+r.inQty:r.inQty)+'</td>'+
-          '<td class="num" style="color:var(--red);">'+(r.outQty>0?'-'+r.outQty:r.outQty)+'</td>'+
-          '<td class="num" style="font-weight:700;">'+r.closing+'</td></tr>';
+        return '<tr><td data-label="Item">'+escapeHtml(r.name)+'</td><td data-label="Category">'+escapeHtml(r.category)+'</td>'+
+          '<td class="num" data-label="Opening Stock">'+r.opening+'</td>'+
+          '<td class="num" data-label="In" style="color:var(--green);">'+(r.inQty>0?'+'+r.inQty:r.inQty)+'</td>'+
+          '<td class="num" data-label="Out" style="color:var(--red);">'+(r.outQty>0?'-'+r.outQty:r.outQty)+'</td>'+
+          '<td class="num" data-label="Closing Stock" style="font-weight:700;">'+r.closing+'</td></tr>';
       }).join('')+'</tbody></table>' : '<div class="empty-note">No items yet.</div>';
 
     var rows = state.items.map(function(it){
       var low = it.stock<=5;
       var lastCost = itemLastPurchasePrice(it);
-      return '<tr><td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.category||'')+'</td><td class="num">'+money(it.price)+'</td>'+
-        '<td class="num">'+(lastCost!=null?money(lastCost):'—')+'</td>'+
-        '<td class="num" style="'+(low?'color:var(--red);font-weight:700;':'')+'">'+it.stock+'</td>'+
-        '<td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" data-restock="'+it.id+'">+ Restock</button> '+
+      return '<tr><td data-label="Item">'+escapeHtml(it.name)+'</td><td data-label="Category">'+escapeHtml(it.category||'')+'</td><td class="num" data-label="Selling Price">'+money(it.price)+'</td>'+
+        '<td class="num" data-label="Last Purchase Price">'+(lastCost!=null?money(lastCost):'—')+'</td>'+
+        '<td class="num" data-label="Stock" style="'+(low?'color:var(--red);font-weight:700;':'')+'">'+it.stock+'</td>'+
+        '<td class="stock-actions" style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" data-restock="'+it.id+'">+ Restock</button> '+
         (it.stock>0 ? '<button class="btn btn-ghost btn-sm" data-stock-return="'+it.id+'" title="Remove stock — damaged, expired, or returned to supplier">Return Stock</button>' : '')+
         '</td>'+
       '</tr>';
@@ -4243,7 +4268,7 @@
       '<div class="note-box">Opening stock = stock on hand at the start of the selected day. Closing stock = stock on hand at the end of that day (opening + In − Out).</div>'+
       openCloseHtml+
     '</div>'+
-    '<div class="card"><table><thead><tr><th>Item</th><th>Category</th><th>Selling Price</th><th>Last Purchase Price</th><th>Stock</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div class="card"><table class="stock-table"><thead><tr><th>Item</th><th>Category</th><th>Selling Price</th><th>Last Purchase Price</th><th>Stock</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
     restockModalHtml+
     stockReturnModalHtml;
   }
