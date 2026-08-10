@@ -1075,7 +1075,7 @@
     return state.currentUser && state.currentUser.role==='admin';
   }
   function deleteBillButtonHtml(b){
-    return canDeleteBills() ? '<button class="btn btn-danger btn-sm" data-delete-bill="'+b.id+'" title="Delete this bill — use only if it was added in error">Delete (added in error)</button>' : '';
+    return '';
   }
 
   async function refreshData(){
@@ -3437,7 +3437,6 @@
     var paid = billPaidTotal(b), bal = billBalance(b), status = billStatus(b);
     var isPayOpen = state.payFormOpenId === b.id;
     var isEditOpen = state.billEditForm && state.billEditForm.billId === b.id;
-    var isReturnOpen = state.returnForm && state.returnForm.billId === b.id;
     var payHistHtml = billPayments_(b);
     var isAcct = b.payment==='account';
     return '<div class="card" style="margin-bottom:12px;">'+
@@ -3469,29 +3468,47 @@
         '<button class="btn btn-ghost btn-sm" data-cancel-pay="'+b.id+'">Cancel</button>'+
       '</div>' : '')+
       (isEditOpen ? renderBillEditForm(b) : '')+
-      (isReturnOpen ? renderReturnForm(b) : '')+
     '</div>';
   }
 
-  function renderReturnForm(b){
+  // Return Bill popup — rendered once (not per-row) and appended to the
+  // page, matching the Restock / Remove Stock modal style.
+  function renderReturnModal(){
     var f = state.returnForm;
+    if(!f) return '';
+    var b = state.bills.find(function(bl){ return bl.id===f.billId; });
+    if(!b) return '';
     var lines = (b.items||[]).map(function(it, idx){
       var remaining = billItemRemainingQty(it);
       if(remaining<=0.004) return '';
       var val = (f.qtys[idx]!=null) ? f.qtys[idx] : 0;
-      return '<div class="edit-line">'+
-        '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">'+escapeHtml(it.name)+' <span class="mono" style="color:var(--text-dim);">(bought '+it.qty+(it.returned?', already returned '+it.returned:'')+')</span></span>'+
-        '<input class="eq" type="number" min="0" max="'+remaining+'" inputmode="numeric" data-ridx="'+idx+'" value="'+val+'" title="Qty to return">'+
+      return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);">'+
+        '<span style="flex:1;min-width:0;">'+
+          '<div style="font-weight:600;font-size:13.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(it.name)+'</div>'+
+          '<div class="mono" style="font-size:11px;color:var(--text-dim);">bought '+it.qty+(it.returned?', already returned '+it.returned:'')+'</div>'+
+        '</span>'+
+        '<input class="eq" type="number" min="0" max="'+remaining+'" inputmode="numeric" data-ridx="'+idx+'" value="'+val+'" title="Qty to return" style="width:64px;text-align:center;height:40px;border:1.5px solid var(--line);border-radius:var(--radius-sm);font-family:inherit;font-size:15px;font-weight:700;color:var(--ink);background:var(--white);">'+
       '</div>';
     }).join('');
-    return '<div class="card" style="margin-top:10px;background:var(--paper);">'+
-      '<div class="section-head"><h3>Return items from Bill '+b.no+'</h3></div>'+
-      '<div class="note-box">Enter the quantity being returned for each item. Returned items go back into stock and the bill total (and balance due, if on account) is reduced accordingly.</div>'+
-      (lines || '<div class="empty-note">Nothing left to return on this bill.</div>')+
-      '<div class="field" style="margin-top:10px;"><label>Reason (optional)</label><input id="ret-reason" placeholder="e.g. damaged, wrong item, customer changed mind" value="'+escapeHtml(f.reason||'')+'"></div>'+
-      '<div class="modal-actions">'+
-        '<button class="btn btn-primary" id="ret-save" style="flex:1;">Confirm Return</button>'+
-        '<button class="btn btn-ghost" id="ret-cancel" style="flex:1;">Cancel</button>'+
+    return '<div class="modal-bg" id="return-modal-bg">'+
+      '<div class="modal-box" style="max-width:420px;">'+
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">'+
+          '<div>'+
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--amber);font-weight:700;margin-bottom:2px;">Return Bill</div>'+
+            '<div style="font-size:19px;font-weight:800;color:var(--ink);">Bill '+b.no+'</div>'+
+            (b.customerName ? '<div style="font-size:12.5px;color:var(--text-dim);">'+escapeHtml(b.customerName)+'</div>' : '')+
+          '</div>'+
+          '<button id="ret-close" style="background:var(--paper-dark);border:none;border-radius:50%;width:34px;height:34px;font-size:18px;line-height:1;cursor:pointer;color:var(--text-dim);flex-shrink:0;" title="Close">&times;</button>'+
+        '</div>'+
+        '<div class="note-box" style="margin-bottom:10px;">Enter the quantity being returned for each item. Returned items go back into stock and the bill total (and balance due, if on account) is reduced accordingly.</div>'+
+        '<div style="max-height:44vh;overflow-y:auto;margin-bottom:4px;">'+
+          (lines || '<div class="empty-note">Nothing left to return on this bill.</div>')+
+        '</div>'+
+        '<div class="field" style="margin-top:12px;"><label style="font-size:13px;font-weight:700;color:var(--ink);">Reason (optional)</label><input id="ret-reason" placeholder="e.g. damaged, wrong item, customer changed mind" value="'+escapeHtml(f.reason||'')+'" style="margin-top:4px;width:100%;height:44px;border:1.5px solid var(--line);border-radius:var(--radius-sm);font-family:inherit;font-size:14px;padding:0 12px;"></div>'+
+        '<div style="display:flex;gap:10px;margin-top:18px;">'+
+          '<button class="btn btn-ghost" id="ret-cancel" style="flex:1;">Cancel</button>'+
+          '<button class="btn btn-amber" id="ret-save" style="flex:2;font-size:15px;">&#8617; Confirm Return</button>'+
+        '</div>'+
       '</div>'+
     '</div>';
   }
@@ -3614,7 +3631,8 @@
       collectedListHtml+
       '<div class="search-row"><input id="acct-search" placeholder="Search by customer, phone, bill no., or date…" value="'+escapeHtml(state.acctSearch||'')+'" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div>'+
       dateFilterHtml+
-      (rows || '<div class="empty-note">'+emptyMsg+'</div>');
+      (rows || '<div class="empty-note">'+emptyMsg+'</div>')+
+      renderReturnModal();
   }
 
   function billPayments_(b){
@@ -3839,8 +3857,13 @@
     var retReasonEl = document.getElementById('ret-reason');
     if(retReasonEl) retReasonEl.addEventListener('input', function(){ state.returnForm.reason = retReasonEl.value; });
 
+    function closeReturnModal(){ state.returnForm=null; render(); }
     var retCancel = document.getElementById('ret-cancel');
-    if(retCancel) retCancel.addEventListener('click', function(){ state.returnForm=null; render(); });
+    if(retCancel) retCancel.addEventListener('click', closeReturnModal);
+    var retClose = document.getElementById('ret-close');
+    if(retClose) retClose.addEventListener('click', closeReturnModal);
+    var retBg = document.getElementById('return-modal-bg');
+    if(retBg) retBg.addEventListener('click', function(e){ if(e.target===retBg) closeReturnModal(); });
 
     var retSave = document.getElementById('ret-save');
     if(retSave) retSave.addEventListener('click', async function(){
@@ -3894,6 +3917,8 @@
       });
 
       state.returnForm = null;
+      retSave.disabled = true;
+      retSave.textContent = 'Returning…';
       await Promise.all([persist('bills'), persist('items'), persist('returns')]);
       render();
     });
