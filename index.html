@@ -554,6 +554,7 @@
     bootLoadFailed:false,
     storageOk:true,
     storageErr:'',
+    lastBillSyncFailed:false,
     view:'billing',
     loginErr:'',
     showAdminPin:false,
@@ -1062,7 +1063,7 @@
         if(state.billEditForm && state.billEditForm.billId===id) state.billEditForm=null;
         state.busyMsg = 'Deleting bill…';
         render();
-        await Promise.all([persist('bills'), persist('items'), persist('deletedBills')]);
+        await persist('bills'); await persist('items'); await persist('deletedBills');
         state.busyMsg = '';
         render();
       });
@@ -2076,7 +2077,7 @@
       throw e;
     }
   }
-  async function storageSet(key, val){
+  async function storageSet(key, val, isRetry){
     if(!sheetConfigured()) return false;
     try{
       var res = await fetch(CONFIG.SHEET_API_URL, {
@@ -2099,6 +2100,14 @@
       state.storageOk = true;
       return true;
     }catch(e){
+      if(!isRetry){
+        // A lock timeout ("Sheet is busy") is usually a one-off — the lock
+        // that was held when we asked has almost always been released a
+        // second later. Give it one silent retry before bothering the
+        // user with the "Not saved" banner, same pattern storageGet uses.
+        await new Promise(function(r){ setTimeout(r, 1200); });
+        return storageSet(key, val, true);
+      }
       state.storageOk=false;
       state.storageErr = (e && e.message) || 'Save failed';
       return false;
@@ -2339,38 +2348,44 @@
     if(!sheetConfigured()) return;
     if(sheetSyncInFlight) return; // last write wins is fine; just avoid piling up requests
     sheetSyncInFlight = true;
-    var tasks = (onlyKey === 'shop')
-      ? [ storageSyncTab('Shop Details & Bill Settings', SHOP_HEADERS, buildShopRows()) ]
+    var tabs = (onlyKey === 'shop')
+      ? [ {sheet:'Shop Details & Bill Settings', headers:SHOP_HEADERS, rows:buildShopRows()} ]
       : [
-          storageSyncTab('Bills Details (All Bills)', BILLS_HEADERS, buildBillsRows()),
-          storageSyncTab('Bills Details (By Date)', BILLS_BY_DATE_HEADERS, buildBillsByDateRows()),
-          storageSyncTab('Customers Full Details', CUSTOMERS_HEADERS, buildCustomersRows()),
-          storageSyncTab('Customer Statement', CUSTOMER_STATEMENT_HEADERS, buildCustomerStatementRows()),
-          storageSyncTab('Stock Details', STOCK_HEADERS, buildStockRows()),
-          storageSyncTab('Stock In-Out', STOCK_MOVEMENTS_HEADERS, buildStockMovementsRows()),
-          storageSyncTab('Cash Sales (By Date)', CASH_SALES_BY_DATE_HEADERS, buildCashSalesByDateRows()),
-          storageSyncTab('Cheque Sales (By Date)', CHEQUE_SALES_BY_DATE_HEADERS, buildChequeSalesByDateRows()),
-          storageSyncTab('Credit Sales (By Date)', CREDIT_SALES_BY_DATE_HEADERS, buildCreditSalesByDateRows()),
-          storageSyncTab('Profit', PROFIT_HEADERS, buildProfitRows()),
-          storageSyncTab('Shop Details & Bill Settings', SHOP_HEADERS, buildShopRows()),
-          storageSyncTab('Cheque Details', CHEQUE_HEADERS, buildChequeRows()),
-          storageSyncTab('Account Details', ACCOUNTS_HEADERS, buildAccountsRows()),
-          storageSyncTab('Sales by day', DAILY_SALES_HEADERS, buildDailySalesRows()),
-          storageSyncTab('Cash In Hand', CASH_HEADERS, buildCashInHandRows()),
-          storageSyncTab('Logo', LOGO_HEADERS, buildLogoRows()),
-          storageSyncTab('Printers', PRINTERS_HEADERS, buildPrintersRows()),
-          storageSyncTab('Returns', RETURNS_HEADERS, buildReturnsRows())
+          {sheet:'Bills Details (All Bills)', headers:BILLS_HEADERS, rows:buildBillsRows()},
+          {sheet:'Bills Details (By Date)', headers:BILLS_BY_DATE_HEADERS, rows:buildBillsByDateRows()},
+          {sheet:'Customers Full Details', headers:CUSTOMERS_HEADERS, rows:buildCustomersRows()},
+          {sheet:'Customer Statement', headers:CUSTOMER_STATEMENT_HEADERS, rows:buildCustomerStatementRows()},
+          {sheet:'Stock Details', headers:STOCK_HEADERS, rows:buildStockRows()},
+          {sheet:'Stock In-Out', headers:STOCK_MOVEMENTS_HEADERS, rows:buildStockMovementsRows()},
+          {sheet:'Cash Sales (By Date)', headers:CASH_SALES_BY_DATE_HEADERS, rows:buildCashSalesByDateRows()},
+          {sheet:'Cheque Sales (By Date)', headers:CHEQUE_SALES_BY_DATE_HEADERS, rows:buildChequeSalesByDateRows()},
+          {sheet:'Credit Sales (By Date)', headers:CREDIT_SALES_BY_DATE_HEADERS, rows:buildCreditSalesByDateRows()},
+          {sheet:'Profit', headers:PROFIT_HEADERS, rows:buildProfitRows()},
+          {sheet:'Shop Details & Bill Settings', headers:SHOP_HEADERS, rows:buildShopRows()},
+          {sheet:'Cheque Details', headers:CHEQUE_HEADERS, rows:buildChequeRows()},
+          {sheet:'Account Details', headers:ACCOUNTS_HEADERS, rows:buildAccountsRows()},
+          {sheet:'Sales by day', headers:DAILY_SALES_HEADERS, rows:buildDailySalesRows()},
+          {sheet:'Cash In Hand', headers:CASH_HEADERS, rows:buildCashInHandRows()},
+          {sheet:'Logo', headers:LOGO_HEADERS, rows:buildLogoRows()},
+          {sheet:'Printers', headers:PRINTERS_HEADERS, rows:buildPrintersRows()},
+          {sheet:'Returns', headers:RETURNS_HEADERS, rows:buildReturnsRows()}
         ];
-    Promise.all(tasks).catch(function(){}).then(function(){ sheetSyncInFlight = false; });
+    // All tabs go in ONE request now (action:'syncAllTabs'), not 17
+    // concurrent ones. Firing 17 simultaneous fetches at the same Apps
+    // Script Web App right after every save was eating up the account's
+    // simultaneous-execution slots, so the real (locked) items/bills save
+    // could end up queued behind that flood long enough to time out even
+    // though the lock itself was never actually stuck for 45s.
+    storageSyncAllTabs(tabs).catch(function(){}).then(function(){ sheetSyncInFlight = false; });
   }
 
-  async function storageSyncTab(sheetName, headers, rows){
+  async function storageSyncAllTabs(tabs){
     if(!sheetConfigured()) return false;
     try{
       var res = await fetch(CONFIG.SHEET_API_URL, {
         method:'POST',
         headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids CORS preflight
-        body: JSON.stringify({ action:'syncTab', sheet:sheetName, headers:headers, rows:rows })
+        body: JSON.stringify({ action:'syncAllTabs', tabs:tabs })
       });
       if(!res.ok) throw new Error('HTTP '+res.status);
       var text = await res.text();
@@ -3249,7 +3264,21 @@
         payments: paidNow>0 ? [{id:uid('pay'), dateISO:new Date().toISOString(), amount:paidNow, note:'Payment at time of sale', receivedBy: state.currentUser.name}] : []
       };
       state.bills.push(bill);
-      await Promise.all([ persist('items'), persist('bills') ]);
+      // items and bills used to be saved in parallel (Promise.all), which
+      // meant every single sale sent two requests that both needed the
+      // same Apps Script lock at once — after weeks of bills piling up,
+      // the "bills" value cell is large enough that writing it can eat
+      // most of the lock-wait window, so the request running alongside it
+      // (items) kept timing out. Saving them one after another instead
+      // means only one request ever needs the lock at a time.
+      var itemsOk = await persist('items');
+      var billsOk = await persist('bills');
+      var persistResults = [itemsOk, billsOk];
+      // persist() returns false (not a thrown error) on failure, so a bad
+      // save here was previously indistinguishable from a good one — the
+      // bill still showed/printed as if everything was fine even though
+      // it never reached the Sheet. Surface that instead of hiding it.
+      state.lastBillSyncFailed = persistResults.indexOf(false) !== -1;
       state.lastBill = bill;
       state.cart = [];
       state.discountVal = 0;
@@ -3286,6 +3315,13 @@
     return ''+
     '<div class="modal-bg" id="receipt-bg"><div class="modal-box" style="position:relative;">'+
       '<button class="close-x" id="receipt-close">✕</button>'+
+      (state.lastBillSyncFailed ? (''+
+        '<div style="background:#FDF1E3;border:1px solid var(--red);color:var(--red);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:10px;font-size:13px;line-height:1.4;">'+
+          '<b>Not saved to Google Sheet.</b> This bill printed but only exists on this device right now — '+
+          escapeHtml(state.storageErr||'the Sheet could not be reached')+'. Tap Retry before closing this screen, or the bill can be lost on refresh.'+
+          '<button class="btn btn-danger btn-sm" id="receipt-retry-sync" style="display:block;margin-top:8px;">Retry Save</button>'+
+        '</div>'
+      ) : '')+
       '<div id="print-area"><div class="receipt-wrap '+widthClass+'">'+
         '<div class="r-center r-shopname">'+escapeHtml(state.shop.name)+'</div>'+
         '<div class="r-center">'+escapeHtml(state.shop.address)+'</div>'+
@@ -3348,6 +3384,15 @@
     if(btConnectBtn) btConnectBtn.addEventListener('click', connectPrinter);
     if(shareBtn) shareBtn.addEventListener('click', function(){ shareBillImage(state.lastBill); });
     if(viewBtn) viewBtn.addEventListener('click', function(){ viewBillImage(state.lastBill); });
+    var retrySyncBtn = document.getElementById('receipt-retry-sync');
+    if(retrySyncBtn) retrySyncBtn.addEventListener('click', async function(){
+      retrySyncBtn.disabled = true;
+      retrySyncBtn.textContent = 'Retrying…';
+      var itemsOk2 = await persist('items');
+      var billsOk2 = await persist('bills');
+      state.lastBillSyncFailed = (itemsOk2 && billsOk2) === false;
+      render();
+    });
   }
 
   // Receipt for a single payment recorded against a credit ("on account")
@@ -4009,7 +4054,7 @@
       state.returnForm = null;
       retSave.disabled = true;
       retSave.textContent = 'Returning…';
-      await Promise.all([persist('bills'), persist('items'), persist('returns')]);
+      await persist('bills'); await persist('items'); await persist('returns');
       render();
     });
 
@@ -4522,7 +4567,7 @@
         processedBy: state.currentUser.name
       });
       state.stockReturnForm = null;
-      await Promise.all([persist('items'), persist('returns')]);
+      await persist('items'); await persist('returns');
       render();
     });
     function closeStockReturnModal(){ state.stockReturnForm=null; render(); }
