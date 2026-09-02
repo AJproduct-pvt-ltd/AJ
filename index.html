@@ -2052,6 +2052,57 @@
     }, 'image/png');
   }
 
+  // Opens a full-screen overlay showing the customer statement rendered as
+  // a PNG image — same pattern as viewBillImage, just backed by
+  // statementToCanvas instead of billToCanvas.
+  function viewStatementImage(customer){
+    if(!customer) return;
+    var canvas;
+    try{ canvas = statementToCanvas(customer); }
+    catch(e){ alert('Could not render the statement image: '+(e.message||e)); return; }
+    var dataUrl = canvas.toDataURL('image/png');
+    var overlay = document.createElement('div');
+    overlay.id = 'statement-img-overlay';
+    overlay.style.cssText = [
+      'position:fixed;inset:0;z-index:9999;',
+      'background:rgba(15,61,117,.82);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);',
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;',
+      'padding:16px;gap:14px;'
+    ].join('');
+    var img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = 'Statement — '+customer.name;
+    img.style.cssText = [
+      'max-width:min(420px,100%);max-height:80vh;',
+      'border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.55);',
+      'display:block;'
+    ].join('');
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center;';
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕  Close';
+    closeBtn.style.cssText = [
+      'padding:9px 22px;background:#FFFFFF;border:none;border-radius:8px;',
+      'font-family:inherit;font-weight:700;font-size:13.5px;cursor:pointer;',
+      'color:#0F3D75;box-shadow:0 2px 8px rgba(0,0,0,.18);'
+    ].join('');
+    var shareBtn2 = document.createElement('button');
+    shareBtn2.textContent = '↗  Share';
+    shareBtn2.style.cssText = [
+      'padding:9px 22px;background:#2563EB;border:none;border-radius:8px;',
+      'font-family:inherit;font-weight:700;font-size:13.5px;cursor:pointer;',
+      'color:#fff;box-shadow:0 2px 8px rgba(37,99,235,.35);'
+    ].join('');
+    shareBtn2.addEventListener('click', function(e){ e.stopPropagation(); shareStatementImage(customer); });
+    closeBtn.addEventListener('click', function(){ document.body.removeChild(overlay); });
+    overlay.addEventListener('click', function(e){ if(e.target===overlay) document.body.removeChild(overlay); });
+    btnRow.appendChild(shareBtn2);
+    btnRow.appendChild(closeBtn);
+    overlay.appendChild(img);
+    overlay.appendChild(btnRow);
+    document.body.appendChild(overlay);
+  }
+
   async function storageGet(key, isRetry){
     if(!sheetConfigured()) return null;
     try{
@@ -4180,6 +4231,7 @@
         '<div class="acct-row-actions" style="margin-top:8px;">'+
           '<button class="btn btn-ghost btn-sm" data-toggle-cust="'+key+'">'+(isOpen?'Hide bills':'View bills ('+c.bills.length+')')+'</button>'+
           (printingEnabled() ? '<button class="btn btn-ghost btn-sm" data-print-statement="'+key+'">Print Statement</button>' : '')+
+          '<button class="btn btn-ghost btn-sm" data-view-statement="'+key+'">View Statement</button>'+
           '<button class="btn btn-ghost btn-sm" data-share-statement="'+key+'">Share Statement as photo</button>'+
         '</div>'+
         (isOpen ? '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);">'+billsHtml+'</div>' : '')+
@@ -4209,11 +4261,24 @@
       });
     });
     document.querySelectorAll('[data-print-statement]').forEach(function(btn){
-      btn.addEventListener('click', function(){
+      btn.addEventListener('click', async function(){
         var key = btn.getAttribute('data-print-statement');
         var customer = buildCustomerStats().find(function(c){ return c.name.toLowerCase()===key; });
         if(!customer) return;
-        printStatementToBluetooth(customer);
+        state.busyMsg = 'Printing statement…';
+        render();
+        var ok = await printStatementToBluetooth(customer);
+        state.busyMsg = '';
+        render();
+        if(!ok) alert(state.printer.status || 'Could not print statement.');
+      });
+    });
+    document.querySelectorAll('[data-view-statement]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var key = btn.getAttribute('data-view-statement');
+        var customer = buildCustomerStats().find(function(c){ return c.name.toLowerCase()===key; });
+        if(!customer) return;
+        viewStatementImage(customer);
       });
     });
     document.querySelectorAll('[data-share-statement]').forEach(function(btn){
@@ -4779,6 +4844,7 @@
           '<button class="btn btn-ghost btn-sm" data-toggle-pending-cust="'+custKey+'">'+(isOpen?'&#9650; Hide bills':'&#9660; View bills ('+c.bills.length+')')+'</button>'+
           (c.phone ? '<a class="btn btn-amber btn-sm" href="tel:'+escapeHtml(c.phone)+'" style="text-decoration:none;display:inline-flex;align-items:center;">&#128222; Call</a>' : '')+
           (printingEnabled() ? '<button class="btn btn-ghost btn-sm" data-print-statement="'+c.name.toLowerCase()+'">Print Statement</button>' : '')+
+          '<button class="btn btn-ghost btn-sm" data-view-statement="'+c.name.toLowerCase()+'">View Statement</button>'+
           '<button class="btn btn-ghost btn-sm" data-share-statement="'+c.name.toLowerCase()+'">Share Statement</button>'+
         '</div>'+
         (isOpen ?
@@ -4898,7 +4964,7 @@
           '<td class="num" style="font-weight:700;color:var(--red);">'+money(a.total)+'</td></tr>';
       }).join('')+'</tbody></table>' : '<div class="empty-note">No account (credit) sales on '+selDateLabel+'.</div>';
 
-    var cashDays = dailyCashSummary();
+    var cashDays = dailyCashSummary().filter(function(r){ return r.date===selDate; });
     var cashDaysHtml = cashDays.length ? '<table><thead><tr><th>Day</th><th>Cash sales</th><th>Cheque sales</th><th>Credit given</th><th>Payments received</th><th>Cash on hand</th></tr></thead><tbody>'+
       cashDays.map(function(r){
         var lbl = new Date(r.date+'T00:00:00').toLocaleDateString(undefined,{weekday:'short', month:'short', day:'numeric'});
@@ -4970,7 +5036,7 @@
     '</div>'+
 
     '<div class="card cash-highlight" style="margin-bottom:18px;">'+
-      '<div class="section-head"><h3>&#128176; Cash on Hand &mdash; Daily Summary</h3>'+
+      '<div class="section-head"><h3>&#128176; Cash on Hand &mdash; Daily Summary ('+selDateLabel+')</h3>'+
         '<button class="btn btn-ghost btn-sm" id="cash-summary-toggle" type="button">'+(state.cashSummaryCollapsed?'Show &#9662;':'Hide &#9652;')+'</button>'+
       '</div>'+
       (state.cashSummaryCollapsed ? '' :
@@ -5090,6 +5156,37 @@
         var key = btn.getAttribute('data-toggle-pending-cust');
         state.pendingCreditExpandedCust = (state.pendingCreditExpandedCust===key) ? null : key;
         render();
+      });
+    });
+
+    // Pending credit bills — Print/Share Statement buttons
+    document.querySelectorAll('[data-print-statement]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var key = btn.getAttribute('data-print-statement');
+        var customer = buildCustomerStats().find(function(c){ return c.name.toLowerCase()===key; });
+        if(!customer) return;
+        state.busyMsg = 'Printing statement…';
+        render();
+        var ok = await printStatementToBluetooth(customer);
+        state.busyMsg = '';
+        render();
+        if(!ok) alert(state.printer.status || 'Could not print statement.');
+      });
+    });
+    document.querySelectorAll('[data-view-statement]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var key = btn.getAttribute('data-view-statement');
+        var customer = buildCustomerStats().find(function(c){ return c.name.toLowerCase()===key; });
+        if(!customer) return;
+        viewStatementImage(customer);
+      });
+    });
+    document.querySelectorAll('[data-share-statement]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var key = btn.getAttribute('data-share-statement');
+        var customer = buildCustomerStats().find(function(c){ return c.name.toLowerCase()===key; });
+        if(!customer) return;
+        shareStatementImage(customer);
       });
     });
 
