@@ -587,6 +587,7 @@
     custSearch:'',
     custDetailKey:null,
     payFormOpenId:null,
+    payFormMethod:'cash',
     billEditForm:null,
     lastBill:null,
     showReceipt:false,
@@ -1409,6 +1410,9 @@
     line(padLine('Amount Received', money(payment.amount), width));
     line(padLine('Balance Remaining', money(ctx.balanceAfter), width));
     bold(false);
+    if(payment.note!=='Payment at time of sale'){
+      line(padLine('Payment Type', (payment.method==='cheque')?'Cheque':'Cash', width));
+    }
     if(payment.receivedBy){
       line(new Array(width+1).join('-'));
       line(padLine('Received By', payment.receivedBy, width));
@@ -1746,7 +1750,7 @@
     sectionTitle('CASH SALES ('+dateLabel+')');
     line(padLine('Cash bills', money(summary.cashBillAmt), width));
     line(padLine('Received now (Account)', money(summary.acctPaidNow), width));
-    line(padLine('Received (old balance)', money(summary.acctReceivePayment), width));
+    line(padLine('Received (old balance)', money(summary.acctReceivePaymentCash), width));
     bold(true);
     line(padLine('Total Cash Sales', money(summary.cashSales), width));
     bold(false);
@@ -1760,6 +1764,9 @@
       });
     } else {
       line('No cheque sales.');
+    }
+    if(summary.acctReceivePaymentCheque>0.004){
+      line(padLine('Received (old balance)', money(summary.acctReceivePaymentCheque), width));
     }
     bold(true);
     line(padLine('Total Cheque Sales', money(summary.chequeSales), width));
@@ -1864,7 +1871,7 @@
     center('CASH SALES', 12, true);
     row('Cash bills', money(data.summary.cashBillAmt));
     row('Received now (Account)', money(data.summary.acctPaidNow));
-    row('Received (old balance)', money(data.summary.acctReceivePayment));
+    row('Received (old balance)', money(data.summary.acctReceivePaymentCash));
     row('Total Cash Sales', money(data.summary.cashSales), true);
     hr();
 
@@ -1875,6 +1882,9 @@
         row('  Cheque #'+(b.chequeNo||'—'), money(b.total));
       });
     } else row('No cheque sales.', '');
+    if(data.summary.acctReceivePaymentCheque>0.004){
+      row('Received (old balance)', money(data.summary.acctReceivePaymentCheque));
+    }
     row('Total Cheque Sales', money(data.summary.chequeSales), true);
     hr();
 
@@ -2571,15 +2581,28 @@
   function buildCashSalesByDateRows(){
     return allReportDates().map(function(date){
       var s = selectedDateSummary(date);
-      return [date, Math.round(s.cashBillAmt*100)/100, Math.round(s.acctPaidNow*100)/100, Math.round(s.acctReceivePayment*100)/100, Math.round(s.cashSales*100)/100];
+      return [date, Math.round(s.cashBillAmt*100)/100, Math.round(s.acctPaidNow*100)/100, Math.round(s.acctReceivePaymentCash*100)/100, Math.round(s.cashSales*100)/100];
     });
   }
 
-  // Cheque Sales (By Date) — cheque bills grouped per day.
-  var CHEQUE_SALES_BY_DATE_HEADERS = ['Date','Cheque Bills','Total Cheque Sales'];
+  // Cheque Sales (By Date) — cheque bills grouped per day, plus any
+  // "Receive Payment" collections that day recorded as Cheque.
+  var CHEQUE_SALES_BY_DATE_HEADERS = ['Date','Cheque Bills','Receive Payment (Old Bill Balance)','Total Cheque Sales'];
   function buildChequeSalesByDateRows(){
     var byDay = groupBillsByDay(state.bills.filter(function(b){ return b.payment==='cheque'; }));
-    return byDay.map(function(d){ return [d.date, d.bills.length, Math.round(d.total*100)/100]; });
+    var map = {};
+    byDay.forEach(function(d){ map[d.date] = {date:d.date, bills:d.bills.length, billTotal:d.total, recv:0}; });
+    allReportDates().forEach(function(date){
+      var s = selectedDateSummary(date);
+      if(s.acctReceivePaymentCheque>0.004){
+        if(!map[date]) map[date] = {date:date, bills:0, billTotal:0, recv:0};
+        map[date].recv = s.acctReceivePaymentCheque;
+      }
+    });
+    return Object.keys(map).sort().reverse().map(function(k){
+      var e = map[k];
+      return [e.date, e.bills, Math.round(e.recv*100)/100, Math.round((e.billTotal+e.recv)*100)/100];
+    });
   }
 
   // Credit Sales (By Date) — account (credit) bills raised per day, plus
@@ -2616,6 +2639,7 @@
       (b.payments||[]).forEach(function(p){
         var day = localDay(p.dateISO);
         if(!day) return;
+        if(p.note!=='Payment at time of sale' && p.method==='cheque') return; // cheque collections aren't cash in hand
         ensure(day).received += p.amount||0;
       });
     });
@@ -2650,12 +2674,23 @@
     });
   }
 
-  var CHEQUE_HEADERS = ['Bill No','Date','Cheque No','Customer Name','Phone','Amount'];
+  var CHEQUE_HEADERS = ['Bill No','Date','Cheque No','Customer Name','Phone','Type','Amount'];
   function buildChequeRows(){
-    return state.bills.filter(function(b){ return b.payment==='cheque'; }).map(function(b){
+    var billRows = state.bills.filter(function(b){ return b.payment==='cheque'; }).map(function(b){
       var d = new Date(b.dateISO);
-      return [b.no||'', d.toLocaleDateString(), b.chequeNo||'', b.customerName||'', b.customerPhone||'', b.total||0];
+      return {sortD: d, row: [b.no||'', d.toLocaleDateString(), b.chequeNo||'', b.customerName||'', b.customerPhone||'', 'Cheque bill', b.total||0]};
     });
+    var recoveryRows = [];
+    state.bills.forEach(function(b){
+      if(b.payment!=='account') return;
+      (b.payments||[]).forEach(function(p){
+        if(p.note==='Payment at time of sale') return;
+        if(p.method!=='cheque') return;
+        var d = new Date(p.dateISO);
+        recoveryRows.push({sortD: d, row: [b.no||'', d.toLocaleDateString(), '', b.customerName||'', b.customerPhone||'', 'Receive Payment', p.amount||0]});
+      });
+    });
+    return billRows.concat(recoveryRows).sort(function(a,b){ return a.sortD-b.sortD; }).map(function(e){ return e.row; });
   }
 
   var PRINTERS_HEADERS = ['Printer Name','First Connected','Last Connected','Times Connected'];
@@ -3050,7 +3085,7 @@
   //  - Credit sales    = balance due (unpaid) on account bills raised that day.
   function selectedDateSummary(date){
     date = date || todayISO();
-    var cashBillAmt = 0, acctPaidNow = 0, acctReceivePayment = 0, chequeAmt = 0, creditBalance = 0;
+    var cashBillAmt = 0, acctPaidNow = 0, acctReceivePaymentCash = 0, acctReceivePaymentCheque = 0, chequeAmt = 0, creditBalance = 0;
     state.bills.forEach(function(b){
       var billDay = localDay(b.dateISO);
       if(b.payment==='cash' && billDay===date) cashBillAmt += (b.total||0);
@@ -3060,17 +3095,21 @@
         (b.payments||[]).forEach(function(p){
           if(localDay(p.dateISO)!==date) return;
           if(p.note==='Payment at time of sale') acctPaidNow += (p.amount||0);
-          else acctReceivePayment += (p.amount||0);
+          else if(p.method==='cheque') acctReceivePaymentCheque += (p.amount||0);
+          else acctReceivePaymentCash += (p.amount||0);
         });
       }
     });
+    var acctReceivePayment = acctReceivePaymentCash + acctReceivePaymentCheque;
     return {
       date: date,
       cashBillAmt: cashBillAmt,
       acctPaidNow: acctPaidNow,
       acctReceivePayment: acctReceivePayment,
-      cashSales: cashBillAmt + acctPaidNow + acctReceivePayment,
-      chequeSales: chequeAmt,
+      acctReceivePaymentCash: acctReceivePaymentCash,
+      acctReceivePaymentCheque: acctReceivePaymentCheque,
+      cashSales: cashBillAmt + acctPaidNow + acctReceivePaymentCash,
+      chequeSales: chequeAmt + acctReceivePaymentCheque,
       creditSales: creditBalance
     };
   }
@@ -3475,6 +3514,7 @@
         '<div class="r-line"><span>Balance Before</span><span>'+money(ctx.balanceBefore)+'</span></div>'+
         '<div class="r-line" style="font-weight:700;"><span>Amount Received</span><span>'+money(payment.amount)+'</span></div>'+
         '<div class="r-line" style="font-weight:700;"><span>Balance Remaining</span><span>'+money(ctx.balanceAfter)+'</span></div>'+
+        (payment.note!=='Payment at time of sale' ? ('<div class="r-line"><span>Payment Type</span><span>'+((payment.method==='cheque')?'Cheque':'Cash')+'</span></div>') : '')+
         (payment.receivedBy ? ('<div class="r-hr"></div><div class="r-line"><span>Received By</span><span>'+escapeHtml(payment.receivedBy)+'</span></div>') : '')+
         '<div class="r-hr"></div>'+
         '<div class="r-center">'+escapeHtml(state.shop.footer)+'</div>'+
@@ -3584,6 +3624,14 @@
         '<div class="field">'+
           '<label style="font-size:13px;font-weight:700;color:var(--ink);">Amount received</label>'+
           '<input type="number" min="0" step="0.01" inputmode="decimal" id="pay-amt-'+b.id+'" value="'+bal+'" style="margin-top:6px;width:100%;height:46px;border:1.5px solid var(--line);border-radius:var(--radius-sm);font-family:inherit;font-size:17px;font-weight:700;color:var(--ink);padding:0 14px;">'+
+        '</div>'+
+        '<div class="field" style="margin-top:10px;">'+
+          '<label style="font-size:13px;font-weight:700;color:var(--ink);">Payment type</label>'+
+          '<div class="pay-tabs" style="margin:6px 0 0;">'+
+            ['cash','cheque'].map(function(m){
+              return '<button type="button" class="pay-tab '+(state.payFormMethod===m?'active':'')+'" data-pay-method="'+m+'">'+m.charAt(0).toUpperCase()+m.slice(1)+'</button>';
+            }).join('')+
+          '</div>'+
         '</div>'+
         '<div style="display:flex;gap:8px;margin-top:10px;">'+
           '<button type="button" class="btn btn-ghost btn-sm" data-pay-quick="half" data-pay-quick-id="'+b.id+'" style="flex:1;">Half &middot; '+money(half)+'</button>'+
@@ -3771,7 +3819,8 @@
     var list = b.payments || [];
     if(!list.length) return '';
     var rows = list.slice().reverse().map(function(p){
-      return '<div class="sum-row" style="font-size:12px;"><span>'+new Date(p.dateISO).toLocaleDateString()+' &mdash; '+escapeHtml(p.note||'Payment')+'</span>'+
+      var methodLbl = p.note==='Payment at time of sale' ? '' : (' ('+((p.method==='cheque')?'Cheque':'Cash')+')');
+      return '<div class="sum-row" style="font-size:12px;"><span>'+new Date(p.dateISO).toLocaleDateString()+' &mdash; '+escapeHtml(p.note||'Payment')+methodLbl+'</span>'+
         '<span class="val">'+money(p.amount)+
         (printingEnabled() ? ' <button class="btn btn-ghost btn-sm" data-print-payment="'+b.id+'|'+p.id+'" style="margin-left:6px;padding:2px 8px;min-height:0;font-size:11px;">Receipt</button>' : '')+
         '</span></div>';
@@ -3864,12 +3913,26 @@
       btn.addEventListener('click', function(){
         var id = btn.getAttribute('data-toggle-pay');
         state.payFormOpenId = (state.payFormOpenId===id) ? null : id;
+        state.payFormMethod = 'cash';
         state.billEditForm = null;
         state.returnForm = null;
         render();
       });
     });
-    function closePayModal(){ state.payFormOpenId = null; render(); }
+    document.querySelectorAll('[data-pay-method]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        state.payFormMethod = btn.getAttribute('data-pay-method');
+        // Toggle active class in place rather than a full render(), so an
+        // amount the user has already typed into the input isn't wiped out
+        // by the input's value attribute being re-stamped from the bill
+        // balance on every render.
+        var group = btn.parentNode;
+        if(group) group.querySelectorAll('[data-pay-method]').forEach(function(b2){
+          b2.classList.toggle('active', b2===btn);
+        });
+      });
+    });
+    function closePayModal(){ state.payFormOpenId = null; state.payFormMethod = 'cash'; render(); }
     var payCancel = document.getElementById('pay-cancel');
     if(payCancel) payCancel.addEventListener('click', closePayModal);
     var payClose = document.getElementById('pay-close');
@@ -3899,7 +3962,8 @@
         var bal = billBalance(bill);
         if(amount>bal+0.01 && !confirm('This amount ('+money(amount)+') is more than the balance due ('+money(bal)+'). Record it anyway?')) return;
         bill.payments = bill.payments || [];
-        var newPayment = {id:uid('pay'), dateISO:new Date().toISOString(), amount:amount, note:'Payment received', receivedBy: state.currentUser.name};
+        var method = state.payFormMethod==='cheque' ? 'cheque' : 'cash';
+        var newPayment = {id:uid('pay'), dateISO:new Date().toISOString(), amount:amount, note:'Payment received', method:method, receivedBy: state.currentUser.name};
         bill.payments.push(newPayment);
         var printingNow = printingEnabled();
         if(printingNow){
@@ -3908,6 +3972,7 @@
         }
         await persist('bills');
         state.payFormOpenId = null;
+        state.payFormMethod = 'cash';
         state.lastPayment = {billId: bill.id, paymentId: newPayment.id};
         state.showPaymentReceipt = true;
         render();
@@ -4711,13 +4776,14 @@
   }
 
   // Cash sales that day, plus any payments received against account
-  // balances that day (assumed collected in cash), respecting the
-  // reports date range but not the payment-type filter.
+  // balances that day (split by how each payment was recorded — Cash or
+  // Cheque), respecting the reports date range but not the payment-type
+  // filter.
   function dailyCashSummary(){
     var from = state.reportFrom, to = state.reportTo;
     var inRange = function(day){ if(from && day<from) return false; if(to && day>to) return false; return true; };
     var map = {};
-    function ensure(day){ if(!map[day]) map[day] = {date:day, cash:0, cheque:0, credit:0, received:0}; return map[day]; }
+    function ensure(day){ if(!map[day]) map[day] = {date:day, cash:0, cheque:0, credit:0, received:0, receivedCheque:0}; return map[day]; }
     state.bills.forEach(function(b){
       var day = localDay(b.dateISO);
       if(!inRange(day)) return;
@@ -4731,11 +4797,16 @@
       (b.payments||[]).forEach(function(p){
         var day = localDay(p.dateISO);
         if(!inRange(day)) return;
-        ensure(day).received += p.amount;
+        if(p.note!=='Payment at time of sale' && p.method==='cheque'){
+          ensure(day).receivedCheque += p.amount;
+        } else {
+          ensure(day).received += p.amount;
+        }
       });
     });
     return Object.keys(map).sort().reverse().map(function(k){
       var r = map[k];
+      r.cheque += r.receivedCheque;
       r.cashOnHand = r.cash + r.received;
       return r;
     });
@@ -4936,12 +5007,27 @@
         '</td></tr>' : '');
     }).join('');
 
-    // Cheque detail — cheque bills on the selected date only (same date as the banners above)
+    // Cheque detail — cheque bills on the selected date, plus any Receive
+    // Payment collections on account bills that day recorded as Cheque.
     var chequeBills = state.bills.filter(function(b){ return b.payment==='cheque' && localDay(b.dateISO)===selDate; });
-    var chequeDetailHtml = chequeBills.length ? '<table><thead><tr><th>Bill</th><th>Date</th><th>Cheque No.</th><th>Customer</th><th>Amount</th></tr></thead><tbody>'+
+    var chequeRecoveries = [];
+    state.bills.forEach(function(b){
+      if(b.payment!=='account') return;
+      (b.payments||[]).forEach(function(p){
+        if(p.note==='Payment at time of sale') return;
+        if(p.method!=='cheque') return;
+        if(localDay(p.dateISO)!==selDate) return;
+        chequeRecoveries.push({bill:b, payment:p});
+      });
+    });
+    var chequeDetailHtml = (chequeBills.length || chequeRecoveries.length) ? '<table><thead><tr><th>Bill</th><th>Date</th><th>Cheque No.</th><th>Customer</th><th>Type</th><th>Amount</th></tr></thead><tbody>'+
       chequeBills.slice().reverse().map(function(b){
         return '<tr><td>'+b.no+'</td><td>'+new Date(b.dateISO).toLocaleDateString()+'</td><td>'+escapeHtml(b.chequeNo||'—')+'</td>'+
-          '<td>'+(b.customerName?escapeHtml(b.customerName):'—')+'</td><td class="num">'+money(b.total)+'</td></tr>';
+          '<td>'+(b.customerName?escapeHtml(b.customerName):'—')+'</td><td>Cheque bill</td><td class="num">'+money(b.total)+'</td></tr>';
+      }).join('')+
+      chequeRecoveries.slice().reverse().map(function(r){
+        return '<tr><td>'+r.bill.no+'</td><td>'+new Date(r.payment.dateISO).toLocaleDateString()+'</td><td>—</td>'+
+          '<td>'+(r.bill.customerName?escapeHtml(r.bill.customerName):'—')+'</td><td>Receive Payment</td><td class="num">'+money(r.payment.amount)+'</td></tr>';
       }).join('')+'</tbody></table>' : '<div class="empty-note">No cheque payments on '+selDateLabel+'.</div>';
 
     // Account detail — grouped by customer, on the selected date only (bills raised that day)
@@ -4977,11 +5063,21 @@
     var today = todayISO();
     // Payments collected today against account (credit) balances — added
     // into "Cash sales amount (Today)" below, same as "Cash on hand" in
-    // the daily breakdown table, since these are assumed collected in cash.
+    // the daily breakdown table, split by how each payment was recorded.
     var totalReceivedToday = state.bills.reduce(function(s,b){
       if(b.payment!=='account') return s; // only credit-sale collections; cash/cheque bills' own payments[] entry is the sale itself, not a separate collection
       return s + (b.payments||[]).reduce(function(s2,p){
-        return (localDay(p.dateISO)===today) ? s2+(p.amount||0) : s2;
+        if(localDay(p.dateISO)!==today) return s2;
+        if(p.note!=='Payment at time of sale' && p.method==='cheque') return s2;
+        return s2+(p.amount||0);
+      },0);
+    },0);
+    var totalReceivedChequeToday = state.bills.reduce(function(s,b){
+      if(b.payment!=='account') return s;
+      return s + (b.payments||[]).reduce(function(s2,p){
+        if(localDay(p.dateISO)!==today) return s2;
+        if(p.note!=='Payment at time of sale' && p.method==='cheque') return s2+(p.amount||0);
+        return s2;
       },0);
     },0);
     var totalCashSalesToday = state.bills.reduce(function(s,b){
@@ -4989,7 +5085,7 @@
     },0) + totalReceivedToday;
     var totalChequeToday = state.bills.reduce(function(s,b){
       return (b.payment==='cheque' && localDay(b.dateISO)===today) ? s+b.total : s;
-    },0);
+    },0) + totalReceivedChequeToday;
     var totalCreditToday = state.bills.reduce(function(s,b){
       return (b.payment==='account' && localDay(b.dateISO)===today) ? s+b.total : s;
     },0);
@@ -5020,13 +5116,16 @@
         '<div class="b-sub">'+
           '<div><span>Cash bills</span><span>'+money(selSummary.cashBillAmt)+'</span></div>'+
           '<div><span>Amount received now (Account)</span><span>'+money(selSummary.acctPaidNow)+'</span></div>'+
-          '<div><span>Receive Payment (old bill balance)</span><span>'+money(selSummary.acctReceivePayment)+'</span></div>'+
+          '<div><span>Receive Payment (old bill balance)</span><span>'+money(selSummary.acctReceivePaymentCash)+'</span></div>'+
         '</div>'+
       '</div>'+
       '<div class="banner-card banner-cheque"><span class="b-icon">&#128179;</span>'+
         '<div class="b-label">Cheque Sales &middot; '+selDateLabel+'</div>'+
         '<div class="b-val">'+money(selSummary.chequeSales)+'</div>'+
-        '<div class="b-sub"><div><span>Cheque bills, '+selDateLabel+'</span><span>'+money(selSummary.chequeSales)+'</span></div></div>'+
+        '<div class="b-sub">'+
+          '<div><span>Cheque bills, '+selDateLabel+'</span><span>'+money(selSummary.chequeSales-selSummary.acctReceivePaymentCheque)+'</span></div>'+
+          (selSummary.acctReceivePaymentCheque>0.004 ? '<div><span>Receive Payment (old bill balance)</span><span>'+money(selSummary.acctReceivePaymentCheque)+'</span></div>' : '')+
+        '</div>'+
       '</div>'+
       '<div class="banner-card banner-credit"><span class="b-icon">&#128100;</span>'+
         '<div class="b-label">Credit Sales &middot; '+selDateLabel+'</div>'+
@@ -5040,7 +5139,7 @@
         '<button class="btn btn-ghost btn-sm" id="cash-summary-toggle" type="button">'+(state.cashSummaryCollapsed?'Show &#9662;':'Hide &#9652;')+'</button>'+
       '</div>'+
       (state.cashSummaryCollapsed ? '' :
-        '<div class="note-box">Cash on hand = cash sales + payments received against account balances, per day. Assumes account payments were collected in cash — see the Bills page to record those payments.</div>'+
+        '<div class="note-box">Cash on hand = cash sales + payments received against account balances, per day. Only payments recorded as Cash count here — cheque payments are counted under Cheque sales instead. See the Bills page to record those payments.</div>'+
         cashDaysHtml
       )+
     '</div>'+
@@ -5231,7 +5330,7 @@
   function reportRangeSummary(from, to){
     var inRange = function(day){ return (!from || day>=from) && (!to || day<=to); };
     var cashBills=[], chequeBills=[], creditBills=[];
-    var acctPaidNow=0, acctReceivePayment=0;
+    var acctPaidNow=0, acctReceivePaymentCash=0, acctReceivePaymentCheque=0;
     state.bills.forEach(function(b){
       var day = localDay(b.dateISO);
       if(inRange(day)){
@@ -5243,21 +5342,24 @@
         (b.payments||[]).forEach(function(p){
           if(!inRange(localDay(p.dateISO))) return;
           if(p.note==='Payment at time of sale') acctPaidNow += (p.amount||0);
-          else acctReceivePayment += (p.amount||0);
+          else if(p.method==='cheque') acctReceivePaymentCheque += (p.amount||0);
+          else acctReceivePaymentCash += (p.amount||0);
         });
       }
     });
+    var acctReceivePayment = acctReceivePaymentCash + acctReceivePaymentCheque;
     var sortByDate = function(a,b){ return new Date(a.dateISO)-new Date(b.dateISO); };
     cashBills.sort(sortByDate); chequeBills.sort(sortByDate); creditBills.sort(sortByDate);
     var cashBillTotal = cashBills.reduce(function(s,b){return s+b.total;},0);
-    var chequeTotal = chequeBills.reduce(function(s,b){return s+b.total;},0);
+    var chequeTotal = chequeBills.reduce(function(s,b){return s+b.total;},0) + acctReceivePaymentCheque;
     var creditBillTotal = creditBills.reduce(function(s,b){return s+b.total;},0);
     var creditBalanceDue = creditBills.reduce(function(s,b){return s+billBalance(b);},0);
     var allInRange = state.bills.filter(function(b){ return inRange(localDay(b.dateISO)); });
     return {
       cashBills:cashBills, chequeBills:chequeBills, creditBills:creditBills,
-      cashBillTotal:cashBillTotal, acctPaidNow:acctPaidNow, acctReceivePayment:acctReceivePayment,
-      totalCashSales: cashBillTotal+acctPaidNow+acctReceivePayment,
+      cashBillTotal:cashBillTotal, acctPaidNow:acctPaidNow, acctReceivePayment:acctReceivePaymentCash,
+      acctReceivePaymentCheque:acctReceivePaymentCheque,
+      totalCashSales: cashBillTotal+acctPaidNow+acctReceivePaymentCash,
       chequeTotal:chequeTotal, creditBillTotal:creditBillTotal, creditBalanceDue:creditBalanceDue,
       allBills: allInRange,
       totalRevenue: allInRange.reduce(function(s,b){return s+b.total;},0),
@@ -5390,6 +5492,9 @@
     table(['Date','Bill No','Cheque No','Customer','Amount'],
       data.chequeBills.map(function(b){ return [localDay(b.dateISO), b.no||'', b.chequeNo||'-', b.customerName||'-', money(b.total)]; }),
       [24,26,26,usableW-24-26-26-36,36], ['left','left','left','left','right'], 'No cheque sales in this period.');
+    if(data.acctReceivePaymentCheque>0.004){
+      kvRow('Account payments received (against old balance)', money(data.acctReceivePaymentCheque));
+    }
     kvRow('TOTAL CHEQUE SALES', money(data.chequeTotal), true, INK);
     y += 4;
 
